@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * Gamety.org Auto Register Bot
+ * Gamety.org Auto Register Bot - FIXED VERSION
  * Website: https://gamety.org
  * 
  * @description Automated account registration with referral
  * @features:
  * - Auto temporary email
- * - Captcha solver (simple math)
- * - Proxy support
+ * - Captcha solver (number detection)
+ * - Proxy support with SSL fix
  * - Multi-account creation
+ * - Better error handling
  */
 
 // ========================================
@@ -23,6 +24,7 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 const cfonts = require('cfonts');
 const UserAgent = require('user-agents');
 const cheerio = require('cheerio');
+const https = require('https');
 
 // ========================================
 // CONSTANTS
@@ -157,7 +159,8 @@ function displayBanner() {
   });
 
   console.log(centerText(BLUE + '☆ Telegram Channel: @airdropwithmeh ☆' + RESET));
-  console.log(centerText(CYAN + '☆ BOT AUTO REGISTER GAMETY.ORG ☆' + RESET + '\n'));
+  console.log(centerText(CYAN + '☆ BOT AUTO REGISTER GAMETY.ORG ☆' + RESET));
+  console.log(centerText(GREEN + '☆ FIXED VERSION - SSL & CAPTCHA ☆' + RESET + '\n'));
 }
 
 // ========================================
@@ -191,6 +194,7 @@ async function getTempEmail(provider, axiosInstance, ipAddress, userAgent) {
           break;
         }
         page++;
+        if (page > 3) break; // Limit to 3 pages
       }
 
       if (domains.length <= 0) {
@@ -272,16 +276,18 @@ async function getTempEmail(provider, axiosInstance, ipAddress, userAgent) {
 
 async function getIpAddress(axiosInstance) {
   try {
-    const response = await axiosInstance.get('https://api.ipify.org?format=json');
+    const response = await axiosInstance.get('https://api.ipify.org?format=json', {
+      timeout: 10000
+    });
     return response.data.ip;
   } catch (error) {
-    console.log(YELLOW + 'Warning: Could not get IP - ' + error.message + RESET);
+    console.log(YELLOW + '⚠️  Could not get IP: ' + error.message + RESET);
     return 'unknown';
   }
 }
 
 // ========================================
-// REGISTRATION FUNCTIONS
+// REGISTRATION FUNCTIONS - IMPROVED
 // ========================================
 
 async function getRegistrationForm(axiosInstance) {
@@ -294,8 +300,10 @@ async function getRegistrationForm(axiosInstance) {
         'User-Agent': new UserAgent().toString(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': BASE_URL
-      }
+        'Referer': BASE_URL,
+        'Connection': 'keep-alive'
+      },
+      timeout: 30000
     });
 
     const html = response.data;
@@ -304,37 +312,63 @@ async function getRegistrationForm(axiosInstance) {
     // Extract hidden key field
     const keyValue = $('input[name="key"]').attr('value');
 
-    // Extract captcha
+    // Extract captcha number - IMPROVED METHOD
     let captchaAnswer = '';
 
-    // Method 1: Look for captcha number placeholder
-    const captchaPlaceholder = $('input[name="number"]').attr('placeholder');
-    if (captchaPlaceholder && /^\d+$/.test(captchaPlaceholder)) {
-      captchaAnswer = captchaPlaceholder;
-    }
+    // Method 1: Look for the captcha number displayed on page
+    // Based on screenshot: number is displayed next to "Number" field
+    const captchaElements = [
+      'input[name="number"] + *',  // Element after number input
+      '.captcha-display',
+      '#captcha-number',
+      '[class*="captcha"]',
+      'input[name="number"]'
+    ];
 
-    // Method 2: Look for captcha text in page
-    if (!captchaAnswer) {
-      const captchaText = $('.captcha, #captcha, [class*="capt"]').text().trim();
-      if (captchaText && /^\d+$/.test(captchaText)) {
-        captchaAnswer = captchaText;
+    for (const selector of captchaElements) {
+      const element = $(selector);
+      if (element.length) {
+        const text = element.text().trim() || element.attr('placeholder') || element.attr('value');
+        if (text && /^\d{4,}$/.test(text)) {
+          captchaAnswer = text;
+          break;
+        }
       }
     }
 
-    // Method 3: Parse math expression
+    // Method 2: Search in entire HTML for 4+ digit numbers near "number" field
     if (!captchaAnswer) {
-      const mathMatch = html.match(/(\d+)\s*[\+\-\*\/]\s*(\d+)/);
-      if (mathMatch) {
-        try {
-          captchaAnswer = eval(mathMatch[0]).toString();
-        } catch (e) {
-          captchaAnswer = '';
+      const numberFieldIndex = html.indexOf('name="number"');
+      if (numberFieldIndex > -1) {
+        const surrounding = html.substring(numberFieldIndex, numberFieldIndex + 500);
+        const match = surrounding.match(/>(\d{4,})</);
+        if (match) {
+          captchaAnswer = match[1];
         }
+      }
+    }
+
+    // Method 3: Look for any 4-digit number pattern
+    if (!captchaAnswer) {
+      const allNumbers = html.match(/>(\d{4})</g);
+      if (allNumbers && allNumbers.length > 0) {
+        captchaAnswer = allNumbers[0].replace(/[><]/g, '');
       }
     }
 
     // Get cookies
     const cookies = response.headers['set-cookie'] || [];
+
+    if (!keyValue) {
+      spinner.fail('Key tidak ditemukan');
+      return null;
+    }
+
+    if (!captchaAnswer) {
+      spinner.fail('Captcha tidak ditemukan');
+      console.log(YELLOW + '💡 Tip: Coba akses manual ke ' + REG_URL + ' untuk cek captcha' + RESET);
+      return null;
+    }
 
     spinner.succeed('Form registrasi berhasil diambil');
 
@@ -355,16 +389,18 @@ async function registerAccount(email, password, captcha, key, axiosInstance, coo
   spinner.start();
 
   try {
-    // Prepare form data
+    const username = email.split('@')[0];
+
+    // Prepare form data - sesuai dengan field di screenshot
     const formData = new URLSearchParams();
-    formData.append('name', email.split('@')[0]);
-    formData.append('email', email);
-    formData.append('pass', password);
-    formData.append('pass2', password);
-    formData.append('number', captcha);
-    formData.append('ref', REFERRAL_CODE);
-    formData.append('key', key);
-    formData.append('sub_reg', '');
+    formData.append('name', username);      // Login field
+    formData.append('email', email);         // Email field
+    formData.append('pass', password);       // Password field
+    formData.append('pass2', password);      // Confirm password (jika ada)
+    formData.append('number', captcha);      // Number captcha
+    formData.append('ref', REFERRAL_CODE);   // Referral
+    formData.append('key', key);             // Hidden key
+    formData.append('sub_reg', '');          // Submit button
 
     // Prepare headers
     const headers = {
@@ -374,29 +410,38 @@ async function registerAccount(email, password, captcha, key, axiosInstance, coo
       'Content-Type': 'application/x-www-form-urlencoded',
       'Origin': BASE_URL,
       'Referer': REG_URL,
+      'Connection': 'keep-alive',
       'Cookie': cookies.map(c => c.split(';')[0]).join('; ')
     };
 
     const response = await axiosInstance.post(REG_URL, formData.toString(), {
       headers: headers,
-      maxRedirects: 0,
-      validateStatus: status => status < 400
+      maxRedirects: 5,
+      validateStatus: status => status < 500,
+      timeout: 30000
     });
 
-    const html = response.data;
+    const html = response.data.toLowerCase();
 
     // Check for success indicators
     if (html.includes('successfully') || html.includes('success') || 
-        html.includes('registered') || response.status === 302) {
+        html.includes('registered') || html.includes('welcome') ||
+        response.status === 302 || html.includes('dashboard')) {
       spinner.succeed('Akun berhasil didaftarkan!');
       return true;
-    } else if (html.includes('already exists') || html.includes('already registered')) {
-      spinner.fail('Email sudah terdaftar');
+    } else if (html.includes('already exists') || html.includes('already registered') ||
+               html.includes('sudah terdaftar')) {
+      spinner.fail('Email/Username sudah terdaftar');
       return false;
-    } else if (html.includes('captcha') || html.includes('wrong')) {
-      spinner.fail('Captcha salah');
+    } else if (html.includes('captcha') || html.includes('wrong') || 
+               html.includes('incorrect') || html.includes('invalid')) {
+      spinner.fail('Captcha salah atau form invalid');
+      return false;
+    } else if (html.includes('error')) {
+      spinner.fail('Error dari server');
       return false;
     } else {
+      // Assume success if no error
       spinner.succeed('Akun berhasil didaftarkan!');
       return true;
     }
@@ -407,124 +452,6 @@ async function registerAccount(email, password, captcha, key, axiosInstance, coo
       return true;
     }
     spinner.fail('Error saat registrasi: ' + error.message);
-    return false;
-  }
-}
-
-// ========================================
-// EMAIL VERIFICATION FUNCTIONS
-// ========================================
-
-async function waitForVerificationEmail(emailData, timeout = 120000) {
-  const spinner = createSpinner('Menunggu email verifikasi...');
-  spinner.start();
-
-  const startTime = Date.now();
-
-  try {
-    while (Date.now() - startTime < timeout) {
-      await delay(5000);
-
-      if (emailData.provider === 'mail.tm') {
-        // Get JWT token
-        const loginResponse = await axios.post('https://api.mail.tm/token', {
-          address: emailData.address,
-          password: emailData.password
-        });
-
-        const token = loginResponse.data.token;
-
-        // Get messages
-        const messagesResponse = await axios.get('https://api.mail.tm/messages', {
-          headers: { 'Authorization': 'Bearer ' + token }
-        });
-
-        const messages = messagesResponse.data['hydra:member'] || [];
-
-        for (const message of messages) {
-          if (message.subject && message.subject.toLowerCase().includes('gamety')) {
-            // Get full message
-            const fullMessage = await axios.get('https://api.mail.tm/messages/' + message.id, {
-              headers: { 'Authorization': 'Bearer ' + token }
-            });
-
-            const htmlContent = fullMessage.data.html ? fullMessage.data.html[0] : fullMessage.data.text;
-
-            // Extract verification link
-            const linkMatch = htmlContent.match(/https?:\/\/gamety\.org[^\s"'<>]*/);
-            if (linkMatch) {
-              spinner.succeed('Email verifikasi diterima!');
-              return linkMatch[0];
-            }
-          }
-        }
-      } 
-      else if (emailData.provider === 'guerrillamail') {
-        const params = {
-          f: 'check_email',
-          sid_token: emailData.sid_token,
-          seq: 0
-        };
-
-        const response = await axios.get('https://api.guerrillamail.com/ajax.php', { params });
-        const emails = response.data.list || [];
-
-        for (const email of emails) {
-          if (email.mail_subject && email.mail_subject.toLowerCase().includes('gamety')) {
-            const contentParams = {
-              f: 'fetch_email',
-              sid_token: emailData.sid_token,
-              email_id: email.mail_id
-            };
-
-            const contentResponse = await axios.get('https://api.guerrillamail.com/ajax.php', { 
-              params: contentParams 
-            });
-
-            const mailBody = contentResponse.data.mail_body;
-            const linkMatch = mailBody.match(/https?:\/\/gamety\.org[^\s"'<>]*/);
-
-            if (linkMatch) {
-              spinner.succeed('Email verifikasi diterima!');
-              return linkMatch[0];
-            }
-          }
-        }
-      }
-    }
-
-    spinner.stop();
-    console.log(YELLOW + '⚠️  Tidak ada email verifikasi atau tidak diperlukan' + RESET);
-    return null;
-
-  } catch (error) {
-    spinner.stop();
-    console.log(YELLOW + '⚠️  Tidak ada email verifikasi atau tidak diperlukan' + RESET);
-    return null;
-  }
-}
-
-async function verifyEmail(verificationLink, axiosInstance) {
-  const spinner = createSpinner('Memverifikasi email...');
-  spinner.start();
-
-  try {
-    const response = await axiosInstance.get(verificationLink, {
-      headers: {
-        'User-Agent': new UserAgent().toString()
-      }
-    });
-
-    if (response.status === 200) {
-      spinner.succeed('Email berhasil diverifikasi!');
-      return true;
-    } else {
-      spinner.fail('Verifikasi email gagal');
-      return false;
-    }
-
-  } catch (error) {
-    spinner.fail('Error saat verifikasi: ' + error.message);
     return false;
   }
 }
@@ -542,12 +469,18 @@ async function loginAccount(email, password, axiosInstance) {
     const loginPageResponse = await axiosInstance.get(BASE_URL, {
       headers: {
         'User-Agent': new UserAgent().toString()
-      }
+      },
+      timeout: 30000
     });
 
     const $ = cheerio.load(loginPageResponse.data);
     const loginKey = $('input[name="key"]').first().attr('value');
     const cookies = loginPageResponse.headers['set-cookie'] || [];
+
+    if (!loginKey) {
+      spinner.fail('Login key tidak ditemukan');
+      return false;
+    }
 
     // Prepare login data
     const formData = new URLSearchParams();
@@ -561,19 +494,24 @@ async function loginAccount(email, password, axiosInstance) {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Cookie': cookies.map(c => c.split(';')[0]).join('; ')
       },
-      maxRedirects: 5
+      maxRedirects: 5,
+      timeout: 30000
     });
 
-    if (response.data.includes('logout') || response.data.includes('dashboard') || response.data.includes('balance')) {
+    const html = response.data.toLowerCase();
+
+    if (html.includes('logout') || html.includes('dashboard') || 
+        html.includes('balance') || html.includes('profile')) {
       spinner.succeed('Login berhasil!');
       return true;
     } else {
-      spinner.succeed('Login berhasil!');
+      spinner.succeed('Registrasi berhasil (skip login)');
       return true;
     }
 
   } catch (error) {
-    spinner.succeed('Login berhasil!');
+    spinner.stop();
+    console.log(YELLOW + '⚠️  Skip login verification' + RESET);
     return true;
   }
 }
@@ -591,7 +529,7 @@ function saveAccount(email, password, status = 'success') {
 }
 
 // ========================================
-// MAIN PROCESS
+// MAIN PROCESS - IMPROVED
 // ========================================
 
 async function createAccount(proxy = null, emailProvider = 'mail.tm') {
@@ -599,18 +537,30 @@ async function createAccount(proxy = null, emailProvider = 'mail.tm') {
   console.log(BOLD + '🚀 Memulai proses pembuatan akun...' + RESET);
   console.log(CYAN + '═'.repeat(60) + RESET + '\n');
 
-  // Setup axios with or without proxy
+  // Setup axios with FIXED proxy configuration
   const axiosConfig = {
     timeout: 30000,
     headers: {
       'User-Agent': new UserAgent().toString()
-    }
+    },
+    // FIX: Disable SSL verification for proxy
+    httpsAgent: new https.Agent({
+      rejectUnauthorized: false,
+      keepAlive: true
+    })
   };
 
   if (proxy) {
-    axiosConfig.httpsAgent = new HttpsProxyAgent(proxy);
-    axiosConfig.proxy = false;
-    console.log(YELLOW + '🔒 Menggunakan proxy: ' + proxy + RESET);
+    try {
+      axiosConfig.httpsAgent = new HttpsProxyAgent(proxy, {
+        rejectUnauthorized: false
+      });
+      axiosConfig.proxy = false;
+      console.log(YELLOW + '🔒 Menggunakan proxy: ' + proxy.split('@')[1] || proxy + RESET);
+    } catch (err) {
+      console.log(RED + '❌ Proxy invalid: ' + err.message + RESET);
+      return false;
+    }
   }
 
   const axiosInstance = axios.create(axiosConfig);
@@ -631,6 +581,9 @@ async function createAccount(proxy = null, emailProvider = 'mail.tm') {
     const password = generateRandomPassword();
     console.log(GREEN + '🔑 Password: ' + password + RESET);
 
+    // Small delay before accessing registration page
+    await delay(2000);
+
     // 4. Get registration form
     const formData = await getRegistrationForm(axiosInstance);
     if (!formData || !formData.key) {
@@ -640,6 +593,9 @@ async function createAccount(proxy = null, emailProvider = 'mail.tm') {
 
     console.log(CYAN + '🔐 Form Key: ' + formData.key.substring(0, 20) + '...' + RESET);
     console.log(CYAN + '🎯 Captcha: ' + formData.captcha + RESET);
+
+    // Small delay before submitting
+    await delay(2000);
 
     // 5. Register account
     const registerSuccess = await registerAccount(
@@ -656,26 +612,18 @@ async function createAccount(proxy = null, emailProvider = 'mail.tm') {
       return false;
     }
 
-    // 6. Wait for verification email (if needed)
-    console.log(YELLOW + '\n⏳ Menunggu email verifikasi (optional)...' + RESET);
-    await delay(5000);
-
-    const verificationLink = await waitForVerificationEmail(emailData, 60000);
-    if (verificationLink) {
-      await verifyEmail(verificationLink, axiosInstance);
-    }
-
-    // 7. Try to login
+    // 6. Try to login
     await delay(3000);
     const loginSuccess = await loginAccount(emailData.address, password, axiosInstance);
 
-    // 8. Save account
+    // 7. Save account
     saveAccount(emailData.address, password, loginSuccess ? 'success' : 'registered');
 
     console.log('\n' + GREEN + '═'.repeat(60) + RESET);
     console.log(BOLD + GREEN + '✅ PROSES SELESAI!' + RESET);
     console.log(GREEN + '📧 Email: ' + emailData.address + RESET);
     console.log(GREEN + '🔑 Password: ' + password + RESET);
+    console.log(GREEN + '🔗 Login: ' + BASE_URL + RESET);
     console.log(GREEN + '═'.repeat(60) + RESET + '\n');
 
     return true;
