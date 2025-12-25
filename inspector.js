@@ -1,25 +1,67 @@
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 
+// Gunakan stealth plugin untuk bypass Cloudflare
+puppeteer.use(StealthPlugin());
+
 async function inspectRegistrationPage() {
-  console.log('🔍 GAMETY.ORG FORM INSPECTOR');
+  console.log('🔍 GAMETY.ORG FORM INSPECTOR WITH CLOUDFLARE BYPASS');
   console.log('='.repeat(60));
   
   const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    headless: false, // Set false agar bisa lihat prosesnya
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-web-security',
+      '--window-size=1920,1080'
+    ],
+    ignoreHTTPSErrors: true,
   });
   
   const page = await browser.newPage();
   
+  // Set user agent yang realistis
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  );
+  
+  // Set viewport
+  await page.setViewport({ width: 1920, height: 1080 });
+  
+  // Set extra headers
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+  });
+  
   try {
     console.log('📄 Membuka halaman registrasi...');
+    console.log('⏳ Menunggu Cloudflare check (bisa 5-20 detik)...\n');
+    
     await page.goto('https://gamety.org/?pages=reg', { 
       waitUntil: 'networkidle2',
       timeout: 60000 
     });
     
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Tunggu lebih lama untuk Cloudflare
+    console.log('⏳ Waiting for Cloudflare bypass...');
+    await page.waitForTimeout(10000);
+    
+    // Cek apakah masih di Cloudflare challenge
+    const title = await page.title();
+    console.log(`📋 Page title: ${title}`);
+    
+    if (title.toLowerCase().includes('cloudflare') || title.toLowerCase().includes('just a moment')) {
+      console.log('⏳ Masih di Cloudflare challenge, menunggu...');
+      await page.waitForTimeout(10000);
+    }
+    
+    // Tambahan wait untuk memastikan
+    await page.waitForTimeout(3000);
     
     // Ambil full HTML
     console.log('\n📋 Menyimpan HTML page...');
@@ -44,6 +86,7 @@ async function inspectRegistrationPage() {
         inputs: [],
         buttons: [],
         captcha: null,
+        selectFields: [],
       };
       
       // Cari semua form
@@ -74,6 +117,22 @@ async function inspectRegistrationPage() {
         });
       });
       
+      // Cari select fields
+      const selects = document.querySelectorAll('select');
+      selects.forEach((select, idx) => {
+        const options = Array.from(select.options).map(opt => ({
+          value: opt.value,
+          text: opt.text
+        }));
+        info.selectFields.push({
+          index: idx,
+          name: select.name || 'no-name',
+          id: select.id || 'no-id',
+          class: select.className || 'no-class',
+          options: options
+        });
+      });
+      
       // Cari semua button
       const buttons = document.querySelectorAll('button, input[type="submit"]');
       buttons.forEach((btn, idx) => {
@@ -94,7 +153,8 @@ async function inspectRegistrationPage() {
         const alt = img.alt || '';
         if (src.toLowerCase().includes('captcha') || 
             alt.toLowerCase().includes('captcha') ||
-            src.toLowerCase().includes('code')) {
+            src.toLowerCase().includes('code') ||
+            src.toLowerCase().includes('verify')) {
           info.captcha = {
             index: idx,
             src: src,
@@ -142,6 +202,21 @@ async function inspectRegistrationPage() {
       });
     }
     
+    console.log('\n📝 SELECT FIELDS DITEMUKAN:');
+    console.log('='.repeat(60));
+    if (formInfo.selectFields.length === 0) {
+      console.log('⚠️  Tidak ada select field ditemukan!');
+    } else {
+      formInfo.selectFields.forEach(select => {
+        console.log(`Select #${select.index}:`);
+        console.log(`  Name: ${select.name}`);
+        console.log(`  ID: ${select.id}`);
+        console.log(`  Class: ${select.class}`);
+        console.log(`  Options: ${select.options.length}`);
+        console.log('');
+      });
+    }
+    
     console.log('\n📝 BUTTONS DITEMUKAN:');
     console.log('='.repeat(60));
     if (formInfo.buttons.length === 0) {
@@ -176,15 +251,18 @@ async function inspectRegistrationPage() {
     fs.writeFileSync('form_info.json', JSON.stringify(formInfo, null, 2));
     console.log('✅ Data disimpan ke: form_info.json');
     
-    // Cek network requests saat submit
-    console.log('\n🌐 Monitoring Network Requests...');
+    // Monitor network requests
+    console.log('\n🌐 Setting up Network Monitoring...');
     
     page.on('request', request => {
       if (request.method() === 'POST') {
         console.log(`\n📤 POST Request:`);
         console.log(`  URL: ${request.url()}`);
         console.log(`  Headers:`, request.headers());
-        console.log(`  Post Data:`, request.postData());
+        const postData = request.postData();
+        if (postData) {
+          console.log(`  Post Data:`, postData);
+        }
       }
     });
     
@@ -211,11 +289,13 @@ async function inspectRegistrationPage() {
       // Login field
       const loginInput = formInfo.inputs.find(i => 
         i.placeholder.toLowerCase().includes('login') ||
-        i.name.toLowerCase().includes('login')
+        i.name.toLowerCase().includes('login') ||
+        i.name.toLowerCase().includes('user')
       );
       if (loginInput) {
-        await page.type(`input[name="${loginInput.name}"]`, testData.username);
+        await page.type(`input[name="${loginInput.name}"]`, testData.username, { delay: 100 });
         console.log(`✅ Login field filled: ${loginInput.name}`);
+        await page.waitForTimeout(500);
       }
       
       // Email field
@@ -225,8 +305,9 @@ async function inspectRegistrationPage() {
         i.name.toLowerCase().includes('email')
       );
       if (emailInput) {
-        await page.type(`input[name="${emailInput.name}"]`, testData.email);
+        await page.type(`input[name="${emailInput.name}"]`, testData.email, { delay: 100 });
         console.log(`✅ Email field filled: ${emailInput.name}`);
+        await page.waitForTimeout(500);
       }
       
       // Password field
@@ -234,18 +315,22 @@ async function inspectRegistrationPage() {
         i.type === 'password'
       );
       if (passwordInput) {
-        await page.type(`input[name="${passwordInput.name}"]`, testData.password);
+        await page.type(`input[name="${passwordInput.name}"]`, testData.password, { delay: 100 });
         console.log(`✅ Password field filled: ${passwordInput.name}`);
+        await page.waitForTimeout(500);
       }
       
       // Number field
       const numberInput = formInfo.inputs.find(i => 
         i.placeholder.toLowerCase().includes('number') ||
-        i.name.toLowerCase().includes('number')
+        i.placeholder.toLowerCase().includes('phone') ||
+        i.name.toLowerCase().includes('number') ||
+        i.name.toLowerCase().includes('phone')
       );
       if (numberInput) {
-        await page.type(`input[name="${numberInput.name}"]`, testData.number);
+        await page.type(`input[name="${numberInput.name}"]`, testData.number, { delay: 100 });
         console.log(`✅ Number field filled: ${numberInput.name}`);
+        await page.waitForTimeout(500);
       }
       
       // Screenshot after fill
@@ -267,10 +352,15 @@ async function inspectRegistrationPage() {
     console.log('  - registration_page.png (Screenshot)');
     console.log('  - form_info.json (Form data)');
     console.log('  - form_filled.png (Filled form screenshot)');
+    console.log('\n💡 Browser tetap terbuka untuk inspeksi manual.');
+    console.log('   Tekan Ctrl+C untuk menutup.');
+    
+    // Jangan close browser agar bisa inspeksi manual
+    // await browser.close();
     
   } catch (error) {
     console.error('❌ Error:', error.message);
-  } finally {
+    console.error('Stack:', error.stack);
     await browser.close();
   }
 }
