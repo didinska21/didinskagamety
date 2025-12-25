@@ -1,13 +1,19 @@
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
+
+// Apply stealth plugin untuk bypass Cloudflare
+puppeteer.use(StealthPlugin());
 
 // Konfigurasi
 const CONFIG = {
   baseUrl: 'https://gamety.org/?ref=218053',
-  proxyFile: 'proxy.txt', // File yang berisi list proxy
-  accountsToCreate: 10, // Jumlah akun yang akan dibuat
-  delayBetweenRegistrations: 5000, // Delay antar registrasi (ms)
+  regUrl: 'https://gamety.org/?pages=reg',
+  proxyFile: 'proxy.txt',
+  accountsToCreate: 10,
+  delayBetweenRegistrations: 8000, // Delay 8 detik
+  cloudflareWaitTime: 15000, // Tunggu 15 detik untuk Cloudflare
 };
 
 // Membaca proxy dari file
@@ -24,7 +30,7 @@ function loadProxies() {
     const proxies = content
       .split('\n')
       .map(line => line.trim())
-      .filter(line => line && !line.startsWith('#')); // Ignore empty lines dan comments
+      .filter(line => line && !line.startsWith('#'));
 
     console.log(`✅ Berhasil load ${proxies.length} proxy dari ${CONFIG.proxyFile}`);
     return proxies;
@@ -34,16 +40,13 @@ function loadProxies() {
   }
 }
 
-// Parse proxy URL (support http, https, socks5)
+// Parse proxy URL
 function parseProxyUrl(proxyUrl) {
   try {
-    // Format: protocol://username:password@host:port
-    // Contoh: http://81634571-zone-custom-region-US:g93c7o0n@na.proxys5.net:6200
-    
     const url = new URL(proxyUrl);
     
     return {
-      protocol: url.protocol.replace(':', ''), // http, https, socks5
+      protocol: url.protocol.replace(':', ''),
       host: url.hostname,
       port: url.port,
       username: url.username || null,
@@ -70,12 +73,11 @@ function generateRandomData() {
   const username = `user_${randomString(8)}`;
   const email = `${randomString(10)}@gmail.com`;
   const password = `Pass${randomString(8)}123!`;
-  const number = Math.floor(Math.random() * 9000000000) + 1000000000; // 10 digit number
 
-  return { username, email, password, number };
+  return { username, email, password };
 }
 
-// Fungsi untuk mendapatkan proxy berikutnya (rotating)
+// Rotating proxy
 let currentProxyIndex = 0;
 let proxyList = [];
 
@@ -88,71 +90,85 @@ function getNextProxy() {
   return parseProxyUrl(proxyUrl);
 }
 
-// Fungsi untuk solve CAPTCHA menggunakan OCR
-async function solveCaptcha(page) {
+// Bypass Cloudflare dan tunggu hingga page loaded
+async function bypassCloudflare(page) {
+  console.log('🛡️  Menunggu Cloudflare challenge...');
+  
   try {
-    console.log('🔍 Mencari CAPTCHA image...');
+    // Tunggu hingga Cloudflare selesai
+    await page.waitForFunction(
+      () => {
+        // Cek apakah masih ada challenge
+        const cf = document.querySelector('#challenge-running, .cf-browser-verification, .challenge-platform');
+        return !cf;
+      },
+      { timeout: CONFIG.cloudflareWaitTime }
+    );
     
-    // Tunggu captcha image muncul - coba beberapa selector
-    const captchaSelectors = [
-      'img[src*="captcha"]',
-      'img[src*="Captcha"]',
-      'img[src*="CAPTCHA"]',
-      'img[alt*="captcha"]',
-      '.captcha img',
-      '#captcha img',
-    ];
+    console.log('✅ Cloudflare bypass berhasil!');
+    return true;
+  } catch (error) {
+    console.log('⚠️  Cloudflare challenge masih ada, mencoba lanjut...');
+    return false;
+  }
+}
 
-    let captchaElement = null;
-    for (const selector of captchaSelectors) {
-      try {
-        await page.waitForSelector(selector, { timeout: 2000 });
-        captchaElement = await page.$(selector);
-        if (captchaElement) {
-          console.log(`✅ CAPTCHA ditemukan dengan selector: ${selector}`);
-          break;
-        }
-      } catch (e) {
-        continue;
+// Extract captcha number dari HTML
+async function getCaptchaNumber(page) {
+  try {
+    console.log('🔍 Mencari captcha number...');
+    
+    const captchaNumber = await page.evaluate(() => {
+      // Method 1: Cari di text content
+      const numberSelectors = [
+        'input[placeholder*="Number"]',
+        'input[name*="number"]',
+        '.captcha-number',
+        '#captcha',
+        'img[alt*="captcha"]',
+      ];
+      
+      // Cari text yang mengandung angka setelah field Number
+      const allText = document.body.innerText;
+      const numberMatch = allText.match(/Number[:\s]*(\d{4,})/i);
+      if (numberMatch) {
+        return numberMatch[1];
       }
-    }
-
-    if (!captchaElement) {
-      console.log('⚠️  CAPTCHA element tidak ditemukan, mencoba lanjut tanpa CAPTCHA...');
-      return '';
-    }
-
-    // Screenshot captcha untuk OCR
-    const captchaImage = await captchaElement.screenshot();
-    
-    // Menggunakan Tesseract.js untuk OCR
-    const Tesseract = require('tesseract.js');
-    
-    console.log('🤖 Memproses CAPTCHA dengan OCR...');
-    const { data: { text } } = await Tesseract.recognize(captchaImage, 'eng', {
-      logger: m => {
-        if (m.status === 'recognizing text') {
-          process.stdout.write(`\r   Progress: ${Math.round(m.progress * 100)}%`);
+      
+      // Method 2: Cari di dekat input Number
+      const numberInput = document.querySelector('input[placeholder*="Number"], input[name*="number"]');
+      if (numberInput) {
+        const parent = numberInput.parentElement;
+        const siblings = Array.from(parent.children);
+        
+        for (const sibling of siblings) {
+          const text = sibling.innerText || sibling.textContent || '';
+          const match = text.match(/\d{4,}/);
+          if (match) {
+            return match[0];
+          }
         }
       }
+      
+      // Method 3: Cari semua angka 4+ digit di page
+      const allNumbers = allText.match(/\b\d{4,}\b/g);
+      if (allNumbers && allNumbers.length > 0) {
+        // Ambil yang paling panjang (biasanya captcha)
+        return allNumbers.reduce((a, b) => a.length > b.length ? a : b);
+      }
+      
+      return null;
     });
     
-    console.log(''); // New line after progress
-    
-    // Bersihkan hasil OCR (ambil hanya angka dan huruf)
-    let captchaText = text.replace(/[^a-zA-Z0-9]/g, '').trim();
-    
-    // Jika hanya angka yang dibutuhkan
-    const numbersOnly = text.replace(/[^0-9]/g, '').trim();
-    if (numbersOnly.length >= 3) {
-      captchaText = numbersOnly;
+    if (captchaNumber) {
+      console.log(`✅ Captcha ditemukan: ${captchaNumber}`);
+      return captchaNumber;
+    } else {
+      console.log('⚠️  Captcha tidak ditemukan, akan coba lanjut tanpa captcha');
+      return '';
     }
-    
-    console.log(`🔐 CAPTCHA terdeteksi: "${captchaText}"`);
-    
-    return captchaText;
   } catch (error) {
-    console.error('❌ Error solving captcha:', error.message);
+    console.error('❌ Error getting captcha:', error.message);
     return '';
   }
 }
@@ -166,22 +182,23 @@ async function registerAccount(accountData, proxyConfig) {
     console.log(`🚀 Memulai registrasi akun: ${accountData.username}`);
     console.log('='.repeat(60));
 
-    // Setup browser dengan proxy
+    // Setup browser dengan stealth mode
     const launchOptions = {
-      headless: 'new', // Gunakan headless mode untuk server tanpa GUI
+      headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
         '--disable-web-security',
         '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-dev-shm-usage', // Untuk server dengan RAM terbatas
+        '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--window-size=1920,1080',
       ],
     };
 
+    // Add proxy
     if (proxyConfig) {
-      // Support untuk HTTP, HTTPS, dan SOCKS5
       if (proxyConfig.protocol === 'socks5') {
         launchOptions.args.push(`--proxy-server=socks5://${proxyConfig.host}:${proxyConfig.port}`);
       } else {
@@ -195,7 +212,7 @@ async function registerAccount(accountData, proxyConfig) {
     browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
 
-    // Authenticate proxy jika ada username/password
+    // Proxy authentication
     if (proxyConfig && proxyConfig.username && proxyConfig.password) {
       await page.authenticate({
         username: proxyConfig.username,
@@ -204,176 +221,128 @@ async function registerAccount(accountData, proxyConfig) {
       console.log('🔐 Proxy authentication berhasil');
     }
 
-    // Set user agent untuk menghindari deteksi bot
+    // Set realistic browser properties
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
-
-    // Set viewport
-    await page.setViewport({ width: 1366, height: 768 });
-
-    // Buka halaman utama
-    console.log('📄 Membuka halaman...');
-    await page.goto(CONFIG.baseUrl, { waitUntil: 'networkidle2', timeout: 60000 });
     
-    // Screenshot untuk debugging
-    // await page.screenshot({ path: `debug_${Date.now()}_1_homepage.png` });
-
-    // Klik tombol "Create an account" di pojok kanan atas
-    console.log('🖱️  Mencari tombol Create an account...');
+    await page.setViewport({ width: 1920, height: 1080 });
     
-    await new Promise(resolve => setTimeout(resolve, 2000)); // Tunggu page fully loaded
-    
-    const createAccountClicked = await page.evaluate(() => {
-      // Cari berdasarkan text
-      const buttons = Array.from(document.querySelectorAll('a, button, div[onclick]'));
-      const createBtn = buttons.find(btn => {
-        const text = btn.textContent.toLowerCase();
-        return text.includes('create an account') || 
-               text.includes('create account') ||
-               text.includes('register');
-      });
-      
-      if (createBtn) {
-        createBtn.click();
-        return true;
-      }
-      
-      // Cari berdasarkan href
-      const link = document.querySelector('a[href*="pages=reg"]');
-      if (link) {
-        link.click();
-        return true;
-      }
-      
-      return false;
+    // Set extra headers
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     });
 
-    if (!createAccountClicked) {
-      // Coba navigasi langsung
-      console.log('⚠️  Tombol tidak ditemukan, navigasi langsung ke halaman registrasi...');
-      await page.goto('https://gamety.org/?pages=reg', { waitUntil: 'networkidle2', timeout: 30000 });
+    // Buka halaman referral dulu
+    console.log('📄 Membuka halaman referral...');
+    await page.goto(CONFIG.baseUrl, { 
+      waitUntil: 'domcontentloaded',
+      timeout: 60000 
+    });
+    
+    // Bypass Cloudflare
+    await bypassCloudflare(page);
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Navigate ke halaman registrasi
+    console.log('📄 Membuka halaman registrasi...');
+    await page.goto(CONFIG.regUrl, { 
+      waitUntil: 'domcontentloaded',
+      timeout: 60000 
+    });
+    
+    // Bypass Cloudflare lagi
+    await bypassCloudflare(page);
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Tunggu form muncul
+    console.log('⏳ Menunggu form registrasi...');
+    
+    // Coba berbagai selector untuk detect form
+    const formDetected = await page.evaluate(() => {
+      const inputs = document.querySelectorAll('input');
+      return inputs.length > 0;
+    });
+
+    if (!formDetected) {
+      throw new Error('Form registrasi tidak ditemukan - mungkin masih di Cloudflare');
+    }
+
+    console.log('✅ Form registrasi ditemukan!');
+
+    // Get captcha number
+    const captchaNumber = await getCaptchaNumber(page);
+
+    // Isi form registrasi
+    console.log('✏️  Mengisi form registrasi...');
+    
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Isi dengan evaluate untuk lebih reliable
+    const fillSuccess = await page.evaluate((data, captcha) => {
+      try {
+        // Login/Username
+        const loginInput = document.querySelector('input[placeholder*="Login"], input[name*="login"]');
+        if (loginInput) {
+          loginInput.value = data.username;
+          loginInput.dispatchEvent(new Event('input', { bubbles: true }));
+          loginInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        // Email
+        const emailInput = document.querySelector('input[placeholder*="Email"], input[type="email"], input[name*="email"]');
+        if (emailInput) {
+          emailInput.value = data.email;
+          emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+          emailInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        // Password
+        const passwordInput = document.querySelector('input[placeholder*="Password"], input[type="password"], input[name*="password"]');
+        if (passwordInput) {
+          passwordInput.value = data.password;
+          passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+          passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        // Number/Captcha
+        if (captcha) {
+          const numberInput = document.querySelector('input[placeholder*="Number"], input[name*="number"]');
+          if (numberInput) {
+            numberInput.value = captcha;
+            numberInput.dispatchEvent(new Event('input', { bubbles: true }));
+            numberInput.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }, accountData, captchaNumber);
+
+    if (fillSuccess) {
+      console.log(`   ✓ Username: ${accountData.username}`);
+      console.log(`   ✓ Email: ${accountData.email}`);
+      console.log(`   ✓ Password: ${accountData.password}`);
+      if (captchaNumber) {
+        console.log(`   ✓ Captcha: ${captchaNumber}`);
+      }
     } else {
-      console.log('✅ Tombol Create an account diklik');
-      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
+      throw new Error('Gagal mengisi form');
     }
 
     await new Promise(resolve => setTimeout(resolve, 2000));
-    // await page.screenshot({ path: `debug_${Date.now()}_2_regpage.png` });
-
-    // Tunggu form registrasi muncul
-    console.log('⏳ Menunggu form registrasi...');
-    
-    // Coba beberapa selector untuk input login
-    const loginSelectors = [
-      'input[placeholder*="Login"]',
-      'input[placeholder*="login"]',
-      'input[name*="login"]',
-      'input[name="login"]',
-      'input#login',
-    ];
-
-    let loginInput = null;
-    for (const selector of loginSelectors) {
-      try {
-        await page.waitForSelector(selector, { timeout: 3000 });
-        loginInput = await page.$(selector);
-        if (loginInput) break;
-      } catch (e) {
-        continue;
-      }
-    }
-
-    if (!loginInput) {
-      throw new Error('Form registrasi tidak ditemukan');
-    }
-
-    // Isi form registrasi
-    console.log('✍️  Mengisi form registrasi...');
-    
-    // Login/Username
-    await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input');
-      inputs.forEach(input => input.value = '');
-    });
-    
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // Login
-    const loginField = await page.$('input[placeholder*="Login"], input[name*="login"]');
-    if (loginField) {
-      await loginField.click({ clickCount: 3 });
-      await loginField.type(accountData.username, { delay: 100 });
-      console.log(`   ✓ Username: ${accountData.username}`);
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Email
-    const emailField = await page.$('input[placeholder*="Email"], input[type="email"], input[name*="email"]');
-    if (emailField) {
-      await emailField.click({ clickCount: 3 });
-      await emailField.type(accountData.email, { delay: 100 });
-      console.log(`   ✓ Email: ${accountData.email}`);
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Password
-    const passwordField = await page.$('input[placeholder*="Password"], input[type="password"], input[name*="password"]');
-    if (passwordField) {
-      await passwordField.click({ clickCount: 3 });
-      await passwordField.type(accountData.password, { delay: 100 });
-      console.log(`   ✓ Password: ${accountData.password}`);
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Number
-    const numberField = await page.$('input[placeholder*="Number"], input[name*="number"]');
-    if (numberField) {
-      await numberField.click({ clickCount: 3 });
-      await numberField.type(accountData.number.toString(), { delay: 100 });
-      console.log(`   ✓ Number: ${accountData.number}`);
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Solve CAPTCHA
-    console.log('🔐 Menyelesaikan CAPTCHA...');
-    const captchaAnswer = await solveCaptcha(page);
-    
-    if (captchaAnswer) {
-      // Isi CAPTCHA
-      const captchaInputSelectors = [
-        'input[name*="captcha"]',
-        'input[placeholder*="captcha"]',
-        'input[name*="code"]',
-        'input[placeholder*="code"]',
-      ];
-
-      for (const selector of captchaInputSelectors) {
-        const captchaInput = await page.$(selector);
-        if (captchaInput) {
-          await captchaInput.click({ clickCount: 3 });
-          await captchaInput.type(captchaAnswer, { delay: 100 });
-          console.log(`   ✓ CAPTCHA: ${captchaAnswer}`);
-          break;
-        }
-      }
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    // await page.screenshot({ path: `debug_${Date.now()}_3_filled.png` });
 
     // Submit form
     console.log('📤 Mengirim form registrasi...');
     
-    const submitClicked = await page.evaluate(() => {
+    const submitSuccess = await page.evaluate(() => {
       // Cari tombol submit
-      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a[onclick]'));
       const submitBtn = buttons.find(btn => {
-        const text = btn.textContent.toLowerCase() || btn.value?.toLowerCase() || '';
+        const text = (btn.textContent || btn.value || '').toLowerCase();
         return text.includes('create') || 
                text.includes('register') || 
                text.includes('submit') ||
@@ -384,37 +353,36 @@ async function registerAccount(accountData, proxyConfig) {
         submitBtn.click();
         return true;
       }
+      
+      // Coba submit form secara langsung
+      const form = document.querySelector('form');
+      if (form) {
+        form.submit();
+        return true;
+      }
+      
       return false;
     });
 
-    if (!submitClicked) {
+    if (!submitSuccess) {
       throw new Error('Tombol submit tidak ditemukan');
     }
     
+    console.log('✅ Form berhasil di-submit!');
+    
     // Tunggu response
     await new Promise(resolve => setTimeout(resolve, 5000));
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
     
-    // await page.screenshot({ path: `debug_${Date.now()}_4_result.png` });
-    
-    // Cek apakah registrasi berhasil
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Cek hasil
     const currentUrl = page.url();
     const pageContent = await page.content().catch(() => '');
-
-    // Cek berbagai indikator sukses/gagal
-    const successIndicators = [
-      !currentUrl.includes('pages=reg'),
-      !pageContent.toLowerCase().includes('error'),
-      !pageContent.toLowerCase().includes('failed'),
-      !pageContent.toLowerCase().includes('invalid'),
-      !pageContent.toLowerCase().includes('wrong'),
-      pageContent.toLowerCase().includes('success') ||
-      pageContent.toLowerCase().includes('welcome') ||
-      pageContent.toLowerCase().includes('account created'),
-    ];
-
-    const isSuccess = successIndicators.filter(Boolean).length >= 3;
+    
+    // Indikator sukses
+    const isSuccess = 
+      !currentUrl.includes('pages=reg') &&
+      !pageContent.toLowerCase().includes('error') &&
+      !pageContent.toLowerCase().includes('failed') &&
+      !pageContent.toLowerCase().includes('invalid');
 
     // Simpan hasil
     const result = {
@@ -422,7 +390,7 @@ async function registerAccount(accountData, proxyConfig) {
       username: accountData.username,
       email: accountData.email,
       password: accountData.password,
-      number: accountData.number,
+      captcha: captchaNumber,
       proxy: proxyConfig ? `${proxyConfig.protocol}://${proxyConfig.host}:${proxyConfig.port}` : 'No proxy',
       timestamp: new Date().toISOString(),
     };
@@ -431,7 +399,7 @@ async function registerAccount(accountData, proxyConfig) {
       console.log('✅ Registrasi BERHASIL!');
       saveAccount(result);
     } else {
-      console.log('❌ Registrasi GAGAL! (Mungkin CAPTCHA salah atau data invalid)');
+      console.log('❌ Registrasi GAGAL!');
     }
 
     return result;
@@ -450,10 +418,10 @@ async function registerAccount(accountData, proxyConfig) {
   }
 }
 
-// Simpan akun yang berhasil dibuat
+// Simpan akun
 function saveAccount(accountData) {
   const filename = 'registered_accounts.txt';
-  const data = `Username: ${accountData.username} | Email: ${accountData.email} | Password: ${accountData.password} | Number: ${accountData.number} | Proxy: ${accountData.proxy} | Time: ${accountData.timestamp}\n`;
+  const data = `Username: ${accountData.username} | Email: ${accountData.email} | Password: ${accountData.password} | Captcha: ${accountData.captcha} | Proxy: ${accountData.proxy} | Time: ${accountData.timestamp}\n`;
   
   fs.appendFileSync(filename, data);
   console.log(`💾 Akun disimpan ke ${filename}`);
@@ -461,10 +429,9 @@ function saveAccount(accountData) {
 
 // Main function
 async function main() {
-  console.log('🎮 GAMETY.ORG AUTO REGISTER');
+  console.log('🎮 GAMETY.ORG AUTO REGISTER (Cloudflare Bypass)');
   console.log('='.repeat(60));
   
-  // Load proxies dari file
   proxyList = loadProxies();
   
   console.log(`📊 Target: ${CONFIG.accountsToCreate} akun`);
@@ -477,7 +444,7 @@ async function main() {
   };
 
   for (let i = 0; i < CONFIG.accountsToCreate; i++) {
-    console.log(`\n📍 Progress: ${i + 1}/${CONFIG.accountsToCreate}`);
+    console.log(`\n🔢 Progress: ${i + 1}/${CONFIG.accountsToCreate}`);
     
     const accountData = generateRandomData();
     const proxyConfig = getNextProxy();
@@ -492,7 +459,7 @@ async function main() {
 
     // Delay sebelum registrasi berikutnya
     if (i < CONFIG.accountsToCreate - 1) {
-      console.log(`⏱️  Menunggu ${CONFIG.delayBetweenRegistrations / 1000} detik sebelum registrasi berikutnya...`);
+      console.log(`⏱️  Menunggu ${CONFIG.delayBetweenRegistrations / 1000} detik...`);
       await new Promise(resolve => setTimeout(resolve, CONFIG.delayBetweenRegistrations));
     }
   }
