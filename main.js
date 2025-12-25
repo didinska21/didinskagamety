@@ -168,13 +168,15 @@ async function registerAccount(accountData, proxyConfig) {
 
     // Setup browser dengan proxy
     const launchOptions = {
-      headless: false, // Set true untuk production
+      headless: 'new', // Gunakan headless mode untuk server tanpa GUI
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
         '--disable-web-security',
         '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-dev-shm-usage', // Untuk server dengan RAM terbatas
+        '--disable-gpu',
       ],
     };
 
