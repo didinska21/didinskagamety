@@ -51,11 +51,10 @@ function readProxiesFromFile(filename) {
 }
 
 function parseProxy(proxyString) {
-  // Parse format: http://username:password@host:port
   const match = proxyString.match(/^(https?|socks5)://(?:([^:]+):([^@]+)@)?([^:]+):(d+)$/);
   
   if (!match) {
-    console.log(YELLOW + '⚠️  Format proxy tidak valid: ' + proxyString + RESET);
+    console.log(YELLOW + 'Warning: Invalid proxy format: ' + proxyString + RESET);
     return null;
   }
   
@@ -65,16 +64,16 @@ function parseProxy(proxyString) {
     password: match[3] || null,
     host: match[4],
     port: match[5],
-    server: `${match[1]}://${match[4]}:${match[5]}`
+    server: match[1] + '://' + match[4] + ':' + match[5]
   };
 }
 
 function saveAccount(email, password, status = 'success') {
   const timestamp = new Date().toISOString();
-  const data = `${email}|${password}|${status}|${timestamp}
-`;
+  const data = email + '|' + password + '|' + status + '|' + timestamp + '
+';
   fs.appendFileSync('accounts.txt', data);
-  console.log(GREEN + '💾 Saved to accounts.txt' + RESET);
+  console.log(GREEN + 'Saved to accounts.txt' + RESET);
 }
 
 function displayBanner() {
@@ -94,7 +93,7 @@ function displayBanner() {
 
 async function getTempEmail() {
   try {
-    console.log(CYAN + '📧 Creating temp email...' + RESET);
+    console.log(CYAN + 'Creating temp email...' + RESET);
     
     const domainsRes = await axios.get('https://api.mail.tm/domains');
     const domains = domainsRes.data['hydra:member'].filter(d => d.isActive && !d.isPrivate);
@@ -111,35 +110,35 @@ async function getTempEmail() {
       password: password
     });
     
-    console.log(GREEN + '✅ Email: ' + email + RESET);
+    console.log(GREEN + 'Email: ' + email + RESET);
     return { address: email, password: password };
     
   } catch (error) {
-    console.log(RED + '❌ Email error: ' + error.message + RESET);
+    console.log(RED + 'Email error: ' + error.message + RESET);
     return null;
   }
 }
 
 async function solveCaptcha(imagePath) {
   try {
-    console.log(CYAN + '🔍 Reading captcha with OCR...' + RESET);
+    console.log(CYAN + 'Reading captcha with OCR...' + RESET);
     
-    const { data: { text } } = await Tesseract.recognize(imagePath, 'eng', {
+    const result = await Tesseract.recognize(imagePath, 'eng', {
       logger: () => {}
     });
     
-    const captcha = text.replace(/[^0-9]/g, '');
+    const captcha = result.data.text.replace(/[^0-9]/g, '');
     
     if (captcha.length >= 4) {
-      console.log(GREEN + '✅ Captcha: ' + captcha + RESET);
+      console.log(GREEN + 'Captcha: ' + captcha + RESET);
       return captcha;
     }
     
-    console.log(YELLOW + '⚠️  Captcha unclear' + RESET);
+    console.log(YELLOW + 'Captcha unclear' + RESET);
     return null;
     
   } catch (error) {
-    console.log(RED + '❌ OCR error: ' + error.message + RESET);
+    console.log(RED + 'OCR error: ' + error.message + RESET);
     return null;
   }
 }
@@ -149,12 +148,11 @@ async function createAccount(proxyString = null, accountNum = 1) {
   
   try {
     console.log('
-' + CYAN + '═'.repeat(70) + RESET);
-    console.log(BOLD + `🚀 Creating account #${accountNum}...` + RESET);
-    console.log(CYAN + '═'.repeat(70) + RESET + '
+' + CYAN + '══════════════════════════════════════════════════════════════════════' + RESET);
+    console.log(BOLD + 'Creating account #' + accountNum + '...' + RESET);
+    console.log(CYAN + '══════════════════════════════════════════════════════════════════════' + RESET + '
 ');
     
-    // Launch options
     const launchOptions = {
       headless: "new",
       args: [
@@ -168,17 +166,14 @@ async function createAccount(proxyString = null, accountNum = 1) {
       ]
     };
     
-    // Parse and add proxy
     let proxyAuth = null;
     if (proxyString) {
       const proxy = parseProxy(proxyString);
       
       if (proxy) {
-        // Add proxy server
-        launchOptions.args.push(`--proxy-server=${proxy.server}`);
-        console.log(YELLOW + `🔒 Proxy: ${proxy.host}:${proxy.port}` + RESET);
+        launchOptions.args.push('--proxy-server=' + proxy.server);
+        console.log(YELLOW + 'Proxy: ' + proxy.host + ':' + proxy.port + RESET);
         
-        // Store auth for later
         if (proxy.username && proxy.password) {
           proxyAuth = {
             username: proxy.username,
@@ -188,61 +183,51 @@ async function createAccount(proxyString = null, accountNum = 1) {
       }
     }
     
-    // Launch browser
-    console.log(CYAN + '🌐 Launching browser...' + RESET);
+    console.log(CYAN + 'Launching browser...' + RESET);
     browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
     
-    // Set viewport
     await page.setViewport({ width: 1920, height: 1080 });
     
-    // Authenticate proxy if needed
     if (proxyAuth) {
       await page.authenticate(proxyAuth);
     }
     
-    // Get email
     const emailData = await getTempEmail();
     if (!emailData) throw new Error('Failed to get email');
     
     const username = emailData.address.split('@')[0];
     const password = generateRandomPassword();
-    console.log(GREEN + '🔑 Password: ' + password + RESET);
+    console.log(GREEN + 'Password: ' + password + RESET);
     
-    // Navigate to registration
-    console.log(CYAN + '📄 Opening registration...' + RESET);
+    console.log(CYAN + 'Opening registration...' + RESET);
     await page.goto(REG_URL, { 
       waitUntil: 'networkidle2', 
       timeout: 60000 
     });
     await randomDelay(2000, 3000);
     
-    // Screenshot
     await page.screenshot({ path: 'page.png' });
-    console.log(CYAN + '📸 Screenshot: page.png' + RESET);
+    console.log(CYAN + 'Screenshot: page.png' + RESET);
     
-    // Wait for form
     await page.waitForSelector('input[name="name"]', { timeout: 10000 });
     
-    // Get captcha
-    console.log(CYAN + '🎯 Getting captcha...' + RESET);
+    console.log(CYAN + 'Getting captcha...' + RESET);
     
     let captchaText = null;
     
-    // Try to find captcha image
     try {
       const captchaImg = await page.$('img[src*="image.php"]');
       
       if (captchaImg) {
         await captchaImg.screenshot({ path: 'captcha.png' });
-        console.log(CYAN + '📸 Captcha saved' + RESET);
+        console.log(CYAN + 'Captcha saved' + RESET);
         captchaText = await solveCaptcha('captcha.png');
       }
     } catch (e) {
-      console.log(YELLOW + '⚠️  Image captcha not found' + RESET);
+      console.log(YELLOW + 'Image captcha not found' + RESET);
     }
     
-    // Fallback: check text captcha
     if (!captchaText) {
       captchaText = await page.evaluate(() => {
         const numberInput = document.querySelector('input[name="number"]');
@@ -256,7 +241,7 @@ async function createAccount(proxyString = null, accountNum = 1) {
       });
       
       if (captchaText) {
-        console.log(GREEN + '✅ Text captcha: ' + captchaText + RESET);
+        console.log(GREEN + 'Text captcha: ' + captchaText + RESET);
       }
     }
     
@@ -264,8 +249,7 @@ async function createAccount(proxyString = null, accountNum = 1) {
       throw new Error('Captcha not found');
     }
     
-    // Fill form
-    console.log(CYAN + '✍️  Filling form...' + RESET);
+    console.log(CYAN + 'Filling form...' + RESET);
     
     await page.click('input[name="name"]');
     await randomDelay(300, 600);
@@ -279,7 +263,6 @@ async function createAccount(proxyString = null, accountNum = 1) {
     await randomDelay(300, 600);
     await page.type('input[name="pass"]', password, { delay: 100 });
     
-    // Check if pass2 exists
     const pass2 = await page.$('input[name="pass2"]');
     if (pass2) {
       await page.click('input[name="pass2"]');
@@ -292,11 +275,9 @@ async function createAccount(proxyString = null, accountNum = 1) {
     await page.type('input[name="number"]', captchaText, { delay: 150 });
     await randomDelay(500, 1000);
     
-    // Screenshot before submit
     await page.screenshot({ path: 'before_submit.png' });
     
-    // Submit
-    console.log(CYAN + '📤 Submitting...' + RESET);
+    console.log(CYAN + 'Submitting...' + RESET);
     
     const submitBtn = await page.$('button[name="sub_reg"]') || await page.$('input[type="submit"]');
     if (submitBtn) {
@@ -305,11 +286,9 @@ async function createAccount(proxyString = null, accountNum = 1) {
       await page.evaluate(() => document.querySelector('form').submit());
     }
     
-    // Wait
     await randomDelay(3000, 5000);
     await page.screenshot({ path: 'after_submit.png' });
     
-    // Check success
     const currentUrl = page.url();
     const content = await page.content();
     const contentLower = content.toLowerCase();
@@ -323,22 +302,22 @@ async function createAccount(proxyString = null, accountNum = 1) {
     
     if (success) {
       console.log(GREEN + BOLD + '
-✅ REGISTRATION SUCCESS!' + RESET);
-      console.log(GREEN + '📧 Email: ' + emailData.address + RESET);
-      console.log(GREEN + '🔑 Password: ' + password + RESET);
+REGISTRATION SUCCESS!' + RESET);
+      console.log(GREEN + 'Email: ' + emailData.address + RESET);
+      console.log(GREEN + 'Password: ' + password + RESET);
       
       saveAccount(emailData.address, password, 'success');
       await browser.close();
       return true;
     } else {
-      console.log(RED + '❌ Registration failed' + RESET);
+      console.log(RED + 'Registration failed' + RESET);
       await browser.close();
       return false;
     }
     
   } catch (error) {
     console.log(RED + '
-❌ Error: ' + error.message + RESET);
+Error: ' + error.message + RESET);
     
     if (browser) {
       try {
@@ -386,12 +365,12 @@ async function main() {
     if (answers.useProxy) {
       proxies = readProxiesFromFile('proxy.txt');
       if (proxies.length === 0) {
-        console.log(RED + '❌ proxy.txt empty!' + RESET);
+        console.log(RED + 'proxy.txt empty!' + RESET);
         console.log(YELLOW + 'Format: http://user:pass@host:port' + RESET);
         return;
       }
-      console.log(GREEN + `✅ Loaded ${proxies.length} proxies
-` + RESET);
+      console.log(GREEN + 'Loaded ' + proxies.length + ' proxies
+' + RESET);
     }
     
     const accountCount = parseInt(answers.accountCount);
@@ -400,9 +379,9 @@ async function main() {
     let successCount = 0;
     let failedCount = 0;
     
-    console.log(BLUE + '═'.repeat(70) + RESET);
-    console.log(BOLD + '🚀 STARTING AUTOMATION' + RESET);
-    console.log(BLUE + '═'.repeat(70) + RESET);
+    console.log(BLUE + '══════════════════════════════════════════════════════════════════════' + RESET);
+    console.log(BOLD + 'STARTING AUTOMATION' + RESET);
+    console.log(BLUE + '══════════════════════════════════════════════════════════════════════' + RESET);
     
     for (let i = 0; i < accountCount; i++) {
       const proxy = answers.useProxy && proxies.length > 0 
@@ -418,21 +397,21 @@ async function main() {
       }
       
       if (i < accountCount - 1) {
-        console.log(YELLOW + `
-⏳ Delay ${answers.delay}s...
-` + RESET);
+        console.log(YELLOW + '
+Delay ' + answers.delay + 's...
+' + RESET);
         await delay(delayMs);
       }
     }
     
     console.log('
-' + BLUE + '═'.repeat(70) + RESET);
-    console.log(BOLD + '📊 SUMMARY' + RESET);
-    console.log(BLUE + '═'.repeat(70) + RESET);
-    console.log(GREEN + '✅ Success: ' + successCount + RESET);
-    console.log(RED + '❌ Failed: ' + failedCount + RESET);
-    console.log(CYAN + '📁 Saved: accounts.txt' + RESET);
-    console.log(BLUE + '═'.repeat(70) + RESET);
+' + BLUE + '══════════════════════════════════════════════════════════════════════' + RESET);
+    console.log(BOLD + 'SUMMARY' + RESET);
+    console.log(BLUE + '══════════════════════════════════════════════════════════════════════' + RESET);
+    console.log(GREEN + 'Success: ' + successCount + RESET);
+    console.log(RED + 'Failed: ' + failedCount + RESET);
+    console.log(CYAN + 'Saved: accounts.txt' + RESET);
+    console.log(BLUE + '══════════════════════════════════════════════════════════════════════' + RESET);
     
   } catch (error) {
     console.log(RED + 'Error: ' + error.message + RESET);
