@@ -52,7 +52,7 @@ async function inspectRegistrationPage() {
     
     // Tunggu lebih lama untuk Cloudflare
     console.log('⏳ Waiting for Cloudflare bypass...');
-    await page.waitForTimeout(10000);
+    await new Promise(resolve => setTimeout(resolve, 10000));
     
     // Cek apakah masih di Cloudflare challenge
     const title = await page.title();
@@ -60,11 +60,11 @@ async function inspectRegistrationPage() {
     
     if (title.toLowerCase().includes('cloudflare') || title.toLowerCase().includes('just a moment')) {
       console.log('⏳ Masih di Cloudflare challenge, menunggu...');
-      await page.waitForTimeout(10000);
+      await new Promise(resolve => setTimeout(resolve, 10000));
     }
     
     // Tambahan wait untuk memastikan
-    await page.waitForTimeout(3000);
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
     // Ambil full HTML
     console.log('\n📋 Menyimpan HTML page...');
@@ -298,7 +298,7 @@ async function inspectRegistrationPage() {
       if (loginInput) {
         await page.type(`input[name="${loginInput.name}"]`, testData.username, { delay: 100 });
         console.log(`✅ Login field filled: ${loginInput.name}`);
-        await page.waitForTimeout(500);
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
       // Email field
@@ -310,7 +310,7 @@ async function inspectRegistrationPage() {
       if (emailInput) {
         await page.type(`input[name="${emailInput.name}"]`, testData.email, { delay: 100 });
         console.log(`✅ Email field filled: ${emailInput.name}`);
-        await page.waitForTimeout(500);
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
       // Password field
@@ -320,7 +320,7 @@ async function inspectRegistrationPage() {
       if (passwordInput) {
         await page.type(`input[name="${passwordInput.name}"]`, testData.password, { delay: 100 });
         console.log(`✅ Password field filled: ${passwordInput.name}`);
-        await page.waitForTimeout(500);
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
       // Number field
@@ -333,7 +333,7 @@ async function inspectRegistrationPage() {
       if (numberInput) {
         await page.type(`input[name="${numberInput.name}"]`, testData.number, { delay: 100 });
         console.log(`✅ Number field filled: ${numberInput.name}`);
-        await page.waitForTimeout(500);
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
       // Screenshot after fill
@@ -356,7 +356,7 @@ async function inspectRegistrationPage() {
     console.log('  - form_info.json (Form data)');
     console.log('  - form_filled.png (Filled form screenshot)');
     console.log('\n⏳ Menunggu 5 detik sebelum menutup browser...');
-    await page.waitForTimeout(5000);
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
     await browser.close();
     console.log('✅ Browser ditutup.');
