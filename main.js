@@ -1,10 +1,6 @@
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const { connect } = require('puppeteer-real-browser');
 const fs = require('fs');
 const path = require('path');
-
-// Apply stealth plugin untuk bypass Cloudflare
-puppeteer.use(StealthPlugin());
 
 // Konfigurasi
 const CONFIG = {
@@ -12,8 +8,7 @@ const CONFIG = {
   regUrl: 'https://gamety.org/?pages=reg',
   proxyFile: 'proxy.txt',
   accountsToCreate: 10,
-  delayBetweenRegistrations: 8000, // Delay 8 detik
-  cloudflareWaitTime: 15000, // Tunggu 15 detik untuk Cloudflare
+  delayBetweenRegistrations: 8000,
 };
 
 // Membaca proxy dari file
@@ -37,25 +32,6 @@ function loadProxies() {
   } catch (error) {
     console.error('❌ Error membaca file proxy:', error.message);
     return [];
-  }
-}
-
-// Parse proxy URL
-function parseProxyUrl(proxyUrl) {
-  try {
-    const url = new URL(proxyUrl);
-    
-    return {
-      protocol: url.protocol.replace(':', ''),
-      host: url.hostname,
-      port: url.port,
-      username: url.username || null,
-      password: url.password || null,
-      fullUrl: proxyUrl,
-    };
-  } catch (error) {
-    console.error(`❌ Error parsing proxy URL: ${proxyUrl}`, error.message);
-    return null;
   }
 }
 
@@ -84,33 +60,10 @@ let proxyList = [];
 function getNextProxy() {
   if (proxyList.length === 0) return null;
   
-  const proxyUrl = proxyList[currentProxyIndex];
+  const proxy = proxyList[currentProxyIndex];
   currentProxyIndex = (currentProxyIndex + 1) % proxyList.length;
   
-  return parseProxyUrl(proxyUrl);
-}
-
-// Bypass Cloudflare dan tunggu hingga page loaded
-async function bypassCloudflare(page) {
-  console.log('🛡️  Menunggu Cloudflare challenge...');
-  
-  try {
-    // Tunggu hingga Cloudflare selesai
-    await page.waitForFunction(
-      () => {
-        // Cek apakah masih ada challenge
-        const cf = document.querySelector('#challenge-running, .cf-browser-verification, .challenge-platform');
-        return !cf;
-      },
-      { timeout: CONFIG.cloudflareWaitTime }
-    );
-    
-    console.log('✅ Cloudflare bypass berhasil!');
-    return true;
-  } catch (error) {
-    console.log('⚠️  Cloudflare challenge masih ada, mencoba lanjut...');
-    return false;
-  }
+  return proxy;
 }
 
 // Extract captcha number dari HTML
@@ -120,15 +73,6 @@ async function getCaptchaNumber(page) {
     
     const captchaNumber = await page.evaluate(() => {
       // Method 1: Cari di text content
-      const numberSelectors = [
-        'input[placeholder*="Number"]',
-        'input[name*="number"]',
-        '.captcha-number',
-        '#captcha',
-        'img[alt*="captcha"]',
-      ];
-      
-      // Cari text yang mengandung angka setelah field Number
       const allText = document.body.innerText;
       const numberMatch = allText.match(/Number[:\s]*(\d{4,})/i);
       if (numberMatch) {
@@ -153,7 +97,6 @@ async function getCaptchaNumber(page) {
       // Method 3: Cari semua angka 4+ digit di page
       const allNumbers = allText.match(/\b\d{4,}\b/g);
       if (allNumbers && allNumbers.length > 0) {
-        // Ambil yang paling panjang (biasanya captcha)
         return allNumbers.reduce((a, b) => a.length > b.length ? a : b);
       }
       
@@ -164,7 +107,7 @@ async function getCaptchaNumber(page) {
       console.log(`✅ Captcha ditemukan: ${captchaNumber}`);
       return captchaNumber;
     } else {
-      console.log('⚠️  Captcha tidak ditemukan, akan coba lanjut tanpa captcha');
+      console.log('⚠️  Captcha tidak ditemukan');
       return '';
     }
   } catch (error) {
@@ -174,102 +117,83 @@ async function getCaptchaNumber(page) {
 }
 
 // Fungsi utama untuk registrasi
-async function registerAccount(accountData, proxyConfig) {
+async function registerAccount(accountData, proxyUrl) {
   let browser = null;
+  let page = null;
   
   try {
     console.log('\n' + '='.repeat(60));
     console.log(`🚀 Memulai registrasi akun: ${accountData.username}`);
     console.log('='.repeat(60));
 
-    // Setup browser dengan stealth mode
-    const launchOptions = {
-      headless: 'new',
+    // Setup real browser dengan cloudflare bypass
+    const connectOptions = {
+      headless: false, // Set true untuk production
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--window-size=1920,1080',
       ],
+      turnstile: true, // Enable Cloudflare Turnstile bypass
+      connectOption: {
+        defaultViewport: null,
+      },
+      disableXvfb: true, // Untuk server headless
+      ignoreAllFlags: false,
     };
 
-    // Add proxy
-    if (proxyConfig) {
-      if (proxyConfig.protocol === 'socks5') {
-        launchOptions.args.push(`--proxy-server=socks5://${proxyConfig.host}:${proxyConfig.port}`);
-      } else {
-        launchOptions.args.push(`--proxy-server=${proxyConfig.protocol}://${proxyConfig.host}:${proxyConfig.port}`);
-      }
-      console.log(`🌐 Menggunakan proxy: ${proxyConfig.protocol}://${proxyConfig.host}:${proxyConfig.port}`);
+    // Add proxy jika ada
+    if (proxyUrl) {
+      connectOptions.args.push(`--proxy-server=${proxyUrl}`);
+      console.log(`🌐 Menggunakan proxy: ${proxyUrl}`);
     } else {
       console.log('🌐 Berjalan tanpa proxy');
     }
 
-    browser = await puppeteer.launch(launchOptions);
-    const page = await browser.newPage();
-
-    // Proxy authentication
-    if (proxyConfig && proxyConfig.username && proxyConfig.password) {
-      await page.authenticate({
-        username: proxyConfig.username,
-        password: proxyConfig.password,
-      });
-      console.log('🔐 Proxy authentication berhasil');
-    }
-
-    // Set realistic browser properties
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
+    console.log('🌐 Menginisialisasi real browser...');
+    const response = await connect(connectOptions);
     
-    await page.setViewport({ width: 1920, height: 1080 });
-    
-    // Set extra headers
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    });
+    browser = response.browser;
+    page = response.page;
+
+    console.log('✅ Real browser berhasil diinisialisasi');
 
     // Buka halaman referral dulu
     console.log('📄 Membuka halaman referral...');
     await page.goto(CONFIG.baseUrl, { 
-      waitUntil: 'domcontentloaded',
+      waitUntil: 'networkidle2',
       timeout: 60000 
     });
     
-    // Bypass Cloudflare
-    await bypassCloudflare(page);
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    console.log('⏳ Menunggu halaman load...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Navigate ke halaman registrasi
     console.log('📄 Membuka halaman registrasi...');
     await page.goto(CONFIG.regUrl, { 
-      waitUntil: 'domcontentloaded',
+      waitUntil: 'networkidle2',
       timeout: 60000 
     });
     
-    // Bypass Cloudflare lagi
-    await bypassCloudflare(page);
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    console.log('⏳ Menunggu form registrasi load...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // Tunggu form muncul
-    console.log('⏳ Menunggu form registrasi...');
-    
-    // Coba berbagai selector untuk detect form
+    // Check apakah form ada
     const formDetected = await page.evaluate(() => {
       const inputs = document.querySelectorAll('input');
       return inputs.length > 0;
     });
 
     if (!formDetected) {
-      throw new Error('Form registrasi tidak ditemukan - mungkin masih di Cloudflare');
+      throw new Error('Form registrasi tidak ditemukan');
     }
 
     console.log('✅ Form registrasi ditemukan!');
+
+    // Screenshot untuk debug
+    await page.screenshot({ path: 'registration_form.png', fullPage: true });
+    console.log('📸 Screenshot disimpan: registration_form.png');
 
     // Get captcha number
     const captchaNumber = await getCaptchaNumber(page);
@@ -283,7 +207,7 @@ async function registerAccount(accountData, proxyConfig) {
     const fillSuccess = await page.evaluate((data, captcha) => {
       try {
         // Login/Username
-        const loginInput = document.querySelector('input[placeholder*="Login"], input[name*="login"]');
+        const loginInput = document.querySelector('input[placeholder*="Login"], input[name*="login"], input[name*="username"]');
         if (loginInput) {
           loginInput.value = data.username;
           loginInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -308,7 +232,7 @@ async function registerAccount(accountData, proxyConfig) {
 
         // Number/Captcha
         if (captcha) {
-          const numberInput = document.querySelector('input[placeholder*="Number"], input[name*="number"]');
+          const numberInput = document.querySelector('input[placeholder*="Number"], input[name*="number"], input[name*="captcha"]');
           if (numberInput) {
             numberInput.value = captcha;
             numberInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -318,6 +242,7 @@ async function registerAccount(accountData, proxyConfig) {
 
         return true;
       } catch (e) {
+        console.error('Error filling form:', e);
         return false;
       }
     }, accountData, captchaNumber);
@@ -335,6 +260,10 @@ async function registerAccount(accountData, proxyConfig) {
 
     await new Promise(resolve => setTimeout(resolve, 2000));
 
+    // Screenshot form terisi
+    await page.screenshot({ path: 'form_filled.png', fullPage: true });
+    console.log('📸 Screenshot form terisi: form_filled.png');
+
     // Submit form
     console.log('📤 Mengirim form registrasi...');
     
@@ -346,7 +275,8 @@ async function registerAccount(accountData, proxyConfig) {
         return text.includes('create') || 
                text.includes('register') || 
                text.includes('submit') ||
-               text.includes('sign up');
+               text.includes('sign up') ||
+               text.includes('daftar');
       });
       
       if (submitBtn) {
@@ -373,6 +303,10 @@ async function registerAccount(accountData, proxyConfig) {
     // Tunggu response
     await new Promise(resolve => setTimeout(resolve, 5000));
     
+    // Screenshot hasil
+    await page.screenshot({ path: 'after_submit.png', fullPage: true });
+    console.log('📸 Screenshot hasil: after_submit.png');
+    
     // Cek hasil
     const currentUrl = page.url();
     const pageContent = await page.content().catch(() => '');
@@ -391,21 +325,35 @@ async function registerAccount(accountData, proxyConfig) {
       email: accountData.email,
       password: accountData.password,
       captcha: captchaNumber,
-      proxy: proxyConfig ? `${proxyConfig.protocol}://${proxyConfig.host}:${proxyConfig.port}` : 'No proxy',
+      proxy: proxyUrl || 'No proxy',
       timestamp: new Date().toISOString(),
+      finalUrl: currentUrl,
     };
 
     if (result.success) {
       console.log('✅ Registrasi BERHASIL!');
+      console.log(`   Final URL: ${currentUrl}`);
       saveAccount(result);
     } else {
       console.log('❌ Registrasi GAGAL!');
+      console.log(`   Final URL: ${currentUrl}`);
     }
 
     return result;
 
   } catch (error) {
     console.error('❌ Error:', error.message);
+    
+    // Screenshot error jika page ada
+    if (page) {
+      try {
+        await page.screenshot({ path: 'error_screenshot.png', fullPage: true });
+        console.log('📸 Error screenshot: error_screenshot.png');
+      } catch (e) {
+        // Ignore screenshot error
+      }
+    }
+    
     return {
       success: false,
       error: error.message,
@@ -421,7 +369,7 @@ async function registerAccount(accountData, proxyConfig) {
 // Simpan akun
 function saveAccount(accountData) {
   const filename = 'registered_accounts.txt';
-  const data = `Username: ${accountData.username} | Email: ${accountData.email} | Password: ${accountData.password} | Captcha: ${accountData.captcha} | Proxy: ${accountData.proxy} | Time: ${accountData.timestamp}\n`;
+  const data = `Username: ${accountData.username} | Email: ${accountData.email} | Password: ${accountData.password} | Captcha: ${accountData.captcha} | Proxy: ${accountData.proxy} | Time: ${accountData.timestamp} | URL: ${accountData.finalUrl}\n`;
   
   fs.appendFileSync(filename, data);
   console.log(`💾 Akun disimpan ke ${filename}`);
@@ -429,7 +377,7 @@ function saveAccount(accountData) {
 
 // Main function
 async function main() {
-  console.log('🎮 GAMETY.ORG AUTO REGISTER (Cloudflare Bypass)');
+  console.log('🎮 GAMETY.ORG AUTO REGISTER (Real Browser Method)');
   console.log('='.repeat(60));
   
   proxyList = loadProxies();
@@ -447,9 +395,9 @@ async function main() {
     console.log(`\n🔢 Progress: ${i + 1}/${CONFIG.accountsToCreate}`);
     
     const accountData = generateRandomData();
-    const proxyConfig = getNextProxy();
+    const proxyUrl = getNextProxy();
     
-    const result = await registerAccount(accountData, proxyConfig);
+    const result = await registerAccount(accountData, proxyUrl);
     
     if (result.success) {
       results.success++;
