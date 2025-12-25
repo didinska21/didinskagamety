@@ -1,7 +1,6 @@
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
 puppeteer.use(StealthPlugin());
 
@@ -10,104 +9,106 @@ puppeteer.use(StealthPlugin());
 const CONFIG = {
   baseUrl: 'https://gamety.org/?ref=218053',
   regUrl: 'https://gamety.org/?pages=reg',
-  proxyFile: 'proxy.txt',
-  accountsToCreate: 10,
-  delayBetweenRegistrations: 8000,
-  cloudflareTimeout: 90000,
-  headless: true, // ⬅️ WAJIB VPS
+  accounts: 10,
+  delay: 8000,
+  headless: true,
+  slowMo: 80
 };
 
 /* ================= UTILS ================= */
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-function loadProxies() {
-  const file = path.join(__dirname, CONFIG.proxyFile);
-  if (!fs.existsSync(file)) return [];
-  return fs.readFileSync(file, 'utf-8')
-    .split('\n')
-    .map(x => x.trim())
-    .filter(Boolean);
-}
-
-function randomString(len) {
+function rand(len) {
   const c = 'abcdefghijklmnopqrstuvwxyz0123456789';
   return [...Array(len)].map(() => c[Math.floor(Math.random() * c.length)]).join('');
 }
 
-function generateAccount() {
+function genAccount() {
   return {
-    username: `user_${randomString(8)}`,
-    email: `${randomString(10)}@gmail.com`,
-    password: `Pass${randomString(6)}!23`
+    username: `user_${rand(8)}`,
+    email: `${rand(10)}@gmail.com`,
+    password: `Pass${rand(6)}!23`
   };
+}
+
+function loadProxies() {
+  if (!fs.existsSync('proxy.txt')) return [];
+  return fs.readFileSync('proxy.txt','utf8')
+    .split('\n').map(x=>x.trim()).filter(Boolean);
+}
+
+/* ================= BROWSER INIT (DIAM STYLE) ================= */
+
+async function initBrowser(proxyUrl=null) {
+  const args = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--window-size=1920,1080',
+    '--disable-blink-features=AutomationControlled'
+  ];
+
+  let proxyAuth = null;
+
+  if (proxyUrl) {
+    const m = proxyUrl.match(/^(https?|socks5):\/\/(?:([^:]+):([^@]+)@)?([^:]+):(\d+)/);
+    if (!m) throw new Error('Invalid proxy format');
+
+    const [, proto, user, pass, host, port] = m;
+    args.push(`--proxy-server=${proto}://${host}:${port}`);
+
+    if (user && pass) {
+      proxyAuth = { username: user, password: pass };
+    }
+
+    console.log(`🌐 Proxy: ${proto}://${host}:${port}`);
+  }
+
+  const browser = await puppeteer.launch({
+    headless: CONFIG.headless ? 'new' : false,
+    slowMo: CONFIG.slowMo,
+    args,
+    executablePath:
+      fs.existsSync('/usr/bin/google-chrome') ? '/usr/bin/google-chrome' :
+      fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' :
+      undefined,
+    ignoreHTTPSErrors: true
+  });
+
+  return { browser, proxyAuth };
 }
 
 /* ================= CLOUDFLARE WAIT ================= */
 
-async function waitCloudflare(page, timeout = 90000) {
-  const start = Date.now();
-  console.log('🛡️ Menunggu Cloudflare...');
-
-  while (Date.now() - start < timeout) {
-    try {
-      const ok = await page.evaluate(() => {
-        const t = document.title.toLowerCase();
-        const b = document.body.innerText.toLowerCase();
-        return !(
-          t.includes('just a moment') ||
-          b.includes('checking your browser') ||
-          b.includes('verifying you are human')
-        );
-      });
-
-      if (ok) {
-        console.log('✅ Cloudflare lolos');
-        return true;
-      }
-    } catch {}
-    await sleep(2000);
+async function waitCF(page) {
+  console.log('🛡️ Waiting Cloudflare...');
+  try {
+    await page.waitForFunction(
+      () =>
+        !document.title.includes('Just a moment') &&
+        !document.body.innerText.includes('Checking your browser'),
+      { timeout: 60000 }
+    );
+    console.log('✅ Cloudflare passed');
+  } catch {
+    console.log('⚠️ CF timeout, continue');
   }
-
-  console.log('⚠️ Cloudflare timeout');
-  return false;
 }
 
 /* ================= REGISTER ================= */
 
-async function register(account, proxy) {
-  let browser, page;
-
+async function register(browser, proxyAuth, acc, idx) {
+  let page;
   try {
-    console.log(`\n🚀 Register: ${account.username}`);
-
-    const args = [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-blink-features=AutomationControlled',
-      '--window-size=1920,1080'
-    ];
-
-    if (proxy) {
-      const clean = proxy.replace(/^https?:\/\//, '');
-      args.push(`--proxy-server=${clean}`);
-      console.log(`🌐 Proxy: ${clean}`);
-    }
-
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args,
-    });
+    console.log(`\n🚀 [${idx}] ${acc.username}`);
 
     page = await browser.newPage();
+    await page.setViewport({ width: 1920, height: 1080 });
 
-    if (proxy && proxy.includes('@')) {
-      const [, auth] = proxy.split('://');
-      const [cred] = auth.split('@');
-      const [username, password] = cred.split(':');
-      await page.authenticate({ username, password });
+    if (proxyAuth) {
+      await page.authenticate(proxyAuth);
     }
 
     await page.setUserAgent(
@@ -115,104 +116,77 @@ async function register(account, proxy) {
       '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9'
-    });
-
     /* Referral */
-    await page.goto(CONFIG.baseUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await waitCloudflare(page);
+    await page.goto(CONFIG.baseUrl, { waitUntil:'networkidle0', timeout:60000 });
+    await waitCF(page);
 
-    /* Registration */
-    await page.goto(CONFIG.regUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await waitCloudflare(page);
+    /* Register page */
+    await page.goto(CONFIG.regUrl, { waitUntil:'networkidle0', timeout:60000 });
+    await waitCF(page);
+    await sleep(3000);
 
-    await sleep(4000);
-
-    const hasForm = await page.$('input');
-    if (!hasForm) throw new Error('Form tidak ditemukan (masih CF?)');
-
-    /* Fill form */
-    await page.evaluate(({ u, e, p }) => {
-      const set = (sel, val) => {
-        const i = document.querySelector(sel);
-        if (i) {
-          i.focus();
-          i.value = val;
-          i.dispatchEvent(new Event('input', { bubbles: true }));
-        }
+    /* Fill */
+    await page.evaluate(a => {
+      const set = (q,v)=>{
+        const i=document.querySelector(q);
+        if(i){i.value=v;i.dispatchEvent(new Event('input',{bubbles:true}))}
       };
-
-      set('input[name*=login i],input[name*=user i]', u);
-      set('input[type=email]', e);
-      set('input[type=password]', p);
-    }, {
-      u: account.username,
-      e: account.email,
-      p: account.password
-    });
+      set('input[name*=login i],input[name*=user i]',a.username);
+      set('input[type=email]',a.email);
+      set('input[type=password]',a.password);
+    }, acc);
 
     await sleep(1500);
 
     /* Submit */
-    const submitted = await page.evaluate(() => {
-      const btn = [...document.querySelectorAll('button,input[type=submit]')]
-        .find(b => /register|create|sign/i.test(b.innerText || b.value));
-      if (btn) {
-        btn.click();
-        return true;
-      }
+    const ok = await page.evaluate(()=>{
+      const b=[...document.querySelectorAll('button,input[type=submit]')]
+        .find(x=>/register|create|sign/i.test(x.innerText||x.value));
+      if(b){b.click();return true;}
       return false;
     });
 
-    if (!submitted) throw new Error('Submit gagal');
+    if(!ok) throw new Error('Submit not found');
 
     await sleep(6000);
 
-    const url = page.url();
-    const ok = !url.includes('pages=reg');
-
-    if (ok) {
+    if (!page.url().includes('pages=reg')) {
       fs.appendFileSync(
         'registered_accounts.txt',
-        `${account.username}|${account.email}|${account.password}|${proxy || 'no-proxy'}\n`
+        `${acc.username}|${acc.email}|${acc.password}\n`
       );
       console.log('✅ SUCCESS');
-    } else {
-      console.log('❌ FAILED');
+      return true;
     }
 
-    return ok;
+    console.log('❌ FAILED');
+    return false;
 
-  } catch (e) {
+  } catch(e) {
     console.log('❌ ERROR:', e.message);
+    if(page) await page.screenshot({ path:`err_${Date.now()}.png` });
     return false;
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if(page) await page.close();
   }
 }
 
 /* ================= MAIN ================= */
 
-(async () => {
-  console.log('🎮 GAMETY AUTO REGISTER – VPS SAFE');
-  console.log('='.repeat(50));
+(async()=>{
+  console.log('🎮 GAMETY AUTO REGISTER – DIAM STYLE\n');
 
   const proxies = loadProxies();
-  let success = 0;
+  const proxy = proxies.length ? proxies[0] : null;
 
-  for (let i = 0; i < CONFIG.accountsToCreate; i++) {
-    const acc = generateAccount();
-    const proxy = proxies.length ? proxies[i % proxies.length] : null;
+  const { browser, proxyAuth } = await initBrowser(proxy);
 
-    if (await register(acc, proxy)) success++;
-    if (i < CONFIG.accountsToCreate - 1) {
-      console.log(`⏱️ Delay ${CONFIG.delayBetweenRegistrations / 1000}s`);
-      await sleep(CONFIG.delayBetweenRegistrations);
-    }
+  let ok = 0;
+  for (let i=0;i<CONFIG.accounts;i++){
+    if (await register(browser, proxyAuth, genAccount(), i+1)) ok++;
+    if (i < CONFIG.accounts-1) await sleep(CONFIG.delay);
   }
 
-  console.log('\n📊 DONE');
-  console.log(`✅ Success: ${success}`);
-  console.log(`❌ Failed: ${CONFIG.accountsToCreate - success}`);
+  console.log(`\n📊 DONE: ${ok}/${CONFIG.accounts}`);
+  await browser.close();
 })();
