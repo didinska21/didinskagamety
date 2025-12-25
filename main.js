@@ -222,7 +222,7 @@ async function registerAccount(accountData, proxyConfig) {
     // Klik tombol "Create an account" di pojok kanan atas
     console.log('🖱️  Mencari tombol Create an account...');
     
-    await page.waitForTimeout(2000); // Tunggu page fully loaded
+    await new Promise(resolve => setTimeout(resolve, 2000)); // Tunggu page fully loaded
     
     const createAccountClicked = await page.evaluate(() => {
       // Cari berdasarkan text
@@ -258,7 +258,7 @@ async function registerAccount(accountData, proxyConfig) {
       await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
     }
 
-    await page.waitForTimeout(2000);
+    await new Promise(resolve => setTimeout(resolve, 2000));
     // await page.screenshot({ path: `debug_${Date.now()}_2_regpage.png` });
 
     // Tunggu form registrasi muncul
@@ -297,7 +297,7 @@ async function registerAccount(accountData, proxyConfig) {
       inputs.forEach(input => input.value = '');
     });
     
-    await page.waitForTimeout(500);
+    await new Promise(resolve => setTimeout(resolve, 500));
     
     // Login
     const loginField = await page.$('input[placeholder*="Login"], input[name*="login"]');
@@ -307,7 +307,7 @@ async function registerAccount(accountData, proxyConfig) {
       console.log(`   ✓ Username: ${accountData.username}`);
     }
 
-    await page.waitForTimeout(500);
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // Email
     const emailField = await page.$('input[placeholder*="Email"], input[type="email"], input[name*="email"]');
@@ -317,7 +317,7 @@ async function registerAccount(accountData, proxyConfig) {
       console.log(`   ✓ Email: ${accountData.email}`);
     }
 
-    await page.waitForTimeout(500);
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // Password
     const passwordField = await page.$('input[placeholder*="Password"], input[type="password"], input[name*="password"]');
@@ -327,7 +327,7 @@ async function registerAccount(accountData, proxyConfig) {
       console.log(`   ✓ Password: ${accountData.password}`);
     }
 
-    await page.waitForTimeout(500);
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // Number
     const numberField = await page.$('input[placeholder*="Number"], input[name*="number"]');
@@ -337,7 +337,7 @@ async function registerAccount(accountData, proxyConfig) {
       console.log(`   ✓ Number: ${accountData.number}`);
     }
 
-    await page.waitForTimeout(1000);
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     // Solve CAPTCHA
     console.log('🔐 Menyelesaikan CAPTCHA...');
@@ -363,7 +363,7 @@ async function registerAccount(accountData, proxyConfig) {
       }
     }
 
-    await page.waitForTimeout(1000);
+    await new Promise(resolve => setTimeout(resolve, 1000));
     // await page.screenshot({ path: `debug_${Date.now()}_3_filled.png` });
 
     // Submit form
@@ -392,13 +392,13 @@ async function registerAccount(accountData, proxyConfig) {
     }
     
     // Tunggu response
-    await page.waitForTimeout(5000);
+    await new Promise(resolve => setTimeout(resolve, 5000));
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
     
     // await page.screenshot({ path: `debug_${Date.now()}_4_result.png` });
     
     // Cek apakah registrasi berhasil
-    await page.waitForTimeout(2000);
+    await new Promise(resolve => setTimeout(resolve, 2000));
     const currentUrl = page.url();
     const pageContent = await page.content().catch(() => '');
 
