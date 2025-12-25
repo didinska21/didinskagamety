@@ -1,6 +1,10 @@
-const { connect } = require('puppeteer-real-browser');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
+
+// Use stealth plugin untuk bypass Cloudflare
+puppeteer.use(StealthPlugin());
 
 // Konfigurasi
 const CONFIG = {
@@ -9,7 +13,8 @@ const CONFIG = {
   proxyFile: 'proxy.txt',
   accountsToCreate: 10,
   delayBetweenRegistrations: 8000,
-  cloudflareTimeout: 60000, // Timeout untuk bypass Cloudflare
+  cloudflareTimeout: 90000,
+  headless: false, // Set true untuk production
 };
 
 // Membaca proxy dari file
@@ -67,27 +72,52 @@ function getNextProxy() {
   return proxy;
 }
 
-// Wait for Cloudflare bypass
-async function waitForCloudflareBypass(page, timeout = 60000) {
+// Wait for Cloudflare bypass dengan deteksi yang lebih baik
+async function waitForCloudflareBypass(page, timeout = 90000) {
   console.log('🛡️  Menunggu Cloudflare bypass...');
   
   const startTime = Date.now();
+  let lastCheck = '';
   
   while (Date.now() - startTime < timeout) {
     try {
-      // Check jika Cloudflare challenge sudah selesai
-      const isCloudflare = await page.evaluate(() => {
+      const checkResult = await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
         const title = document.title.toLowerCase();
+        const url = window.location.href;
         
         // Cek indikator Cloudflare
-        return bodyText.includes('verifying you are human') || 
-               bodyText.includes('checking your browser') ||
-               bodyText.includes('cloudflare') ||
-               title.includes('just a moment');
+        const hasCloudflare = 
+          bodyText.includes('verifying you are human') || 
+          bodyText.includes('checking your browser') ||
+          bodyText.includes('just a moment') ||
+          title.includes('just a moment') ||
+          bodyText.includes('enable javascript and cookies');
+        
+        // Cek indikator halaman sudah load
+        const hasContent = 
+          document.querySelectorAll('input').length > 0 ||
+          bodyText.length > 200;
+        
+        return {
+          hasCloudflare,
+          hasContent,
+          url,
+          titlePreview: title.substring(0, 50),
+          bodyPreview: bodyText.substring(0, 100),
+        };
       });
       
-      if (!isCloudflare) {
+      const status = `CF: ${checkResult.hasCloudflare}, Content: ${checkResult.hasContent}`;
+      
+      if (status !== lastCheck) {
+        console.log(`   📊 Status: ${status}`);
+        console.log(`   🔗 URL: ${checkResult.url}`);
+        lastCheck = status;
+      }
+      
+      // Jika tidak ada Cloudflare dan ada konten, berarti bypass berhasil
+      if (!checkResult.hasCloudflare && checkResult.hasContent) {
         console.log('✅ Cloudflare bypass berhasil!');
         return true;
       }
@@ -96,8 +126,8 @@ async function waitForCloudflareBypass(page, timeout = 60000) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      if (elapsed % 5 === 0) {
-        console.log(`   ⏳ Menunggu bypass... (${elapsed}s)`);
+      if (elapsed % 10 === 0 && elapsed > 0) {
+        console.log(`   ⏳ Masih menunggu... (${elapsed}s/${timeout/1000}s)`);
       }
       
     } catch (error) {
@@ -115,21 +145,20 @@ async function getCaptchaNumber(page) {
     console.log('🔍 Mencari captcha number...');
     
     const captchaNumber = await page.evaluate(() => {
-      // Method 1: Cari di text content
       const allText = document.body.innerText;
+      
+      // Method 1: Cari pattern "Number: 12345"
       const numberMatch = allText.match(/Number[:\s]*(\d{4,})/i);
       if (numberMatch) {
         return numberMatch[1];
       }
       
       // Method 2: Cari di dekat input Number
-      const numberInput = document.querySelector('input[placeholder*="Number"], input[name*="number"]');
+      const numberInput = document.querySelector('input[placeholder*="Number" i], input[name*="number" i]');
       if (numberInput) {
-        const parent = numberInput.parentElement;
-        const siblings = Array.from(parent.children);
-        
-        for (const sibling of siblings) {
-          const text = sibling.innerText || sibling.textContent || '';
+        const parent = numberInput.closest('div, p, span, label');
+        if (parent) {
+          const text = parent.innerText || parent.textContent || '';
           const match = text.match(/\d{4,}/);
           if (match) {
             return match[0];
@@ -137,10 +166,10 @@ async function getCaptchaNumber(page) {
         }
       }
       
-      // Method 3: Cari semua angka 4+ digit di page
+      // Method 3: Cari semua angka 4+ digit dan ambil yang paling panjang
       const allNumbers = allText.match(/\b\d{4,}\b/g);
       if (allNumbers && allNumbers.length > 0) {
-        return allNumbers.reduce((a, b) => a.length > b.length ? a : b);
+        return allNumbers.reduce((a, b) => a.length >= b.length ? a : b);
       }
       
       return null;
@@ -169,65 +198,60 @@ async function registerAccount(accountData, proxyUrl) {
     console.log(`🚀 Memulai registrasi akun: ${accountData.username}`);
     console.log('='.repeat(60));
 
-    // Setup real browser
-    const connectOptions = {
-      headless: 'auto',
+    // Launch options
+    const launchOptions = {
+      headless: CONFIG.headless,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
         '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
         '--window-size=1920,1080',
       ],
-      turnstile: true, // Enable Cloudflare bypass
-      connectOption: {
-        defaultViewport: {
-          width: 1920,
-          height: 1080
-        },
+      defaultViewport: {
+        width: 1920,
+        height: 1080
       },
-      disableXvfb: false,
-      ignoreAllFlags: false,
-      customConfig: {},
     };
 
     // Add proxy jika ada
     if (proxyUrl) {
-      connectOptions.args.push(`--proxy-server=${proxyUrl}`);
-      console.log(`🌐 Menggunakan proxy: ${proxyUrl}`);
+      // Parse proxy URL untuk authentication
+      const proxyMatch = proxyUrl.match(/^(https?:\/\/)?(([^:]+):([^@]+)@)?(.+)$/);
+      if (proxyMatch) {
+        const [, protocol, , username, password, server] = proxyMatch;
+        
+        if (username && password) {
+          launchOptions.args.push(`--proxy-server=${protocol || 'http://'}${server}`);
+          console.log(`🌐 Menggunakan proxy: ${server} (dengan auth)`);
+        } else {
+          launchOptions.args.push(`--proxy-server=${proxyUrl}`);
+          console.log(`🌐 Menggunakan proxy: ${proxyUrl}`);
+        }
+      }
     } else {
       console.log('🌐 Berjalan tanpa proxy');
     }
 
-    console.log('🌐 Menginisialisasi real browser...');
-    
-    let response;
-    try {
-      response = await Promise.race([
-        connect(connectOptions),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Browser startup timeout')), 60000)
-        )
-      ]);
-    } catch (error) {
-      console.error('❌ Error saat connect browser:', error.message);
-      
-      if (proxyUrl && error.message.includes('ECONNREFUSED')) {
-        console.log('⚠️  Mencoba lagi tanpa proxy...');
-        connectOptions.args = connectOptions.args.filter(arg => !arg.includes('--proxy-server'));
-        response = await connect(connectOptions);
-      } else {
-        throw error;
+    console.log('🌐 Menginisialisasi browser dengan Stealth Plugin...');
+    browser = await puppeteer.launch(launchOptions);
+    page = await browser.newPage();
+
+    // Authenticate proxy jika ada credentials
+    if (proxyUrl) {
+      const proxyMatch = proxyUrl.match(/^https?:\/\/([^:]+):([^@]+)@/);
+      if (proxyMatch) {
+        const [, username, password] = proxyMatch;
+        await page.authenticate({
+          username,
+          password
+        });
+        console.log('✅ Proxy authentication berhasil');
       }
     }
-    
-    browser = response.browser;
-    page = response.page;
 
-    console.log('✅ Real browser berhasil diinisialisasi');
+    console.log('✅ Browser berhasil diinisialisasi');
 
     // Set extra headers
     await page.setExtraHTTPHeaders({
@@ -235,205 +259,260 @@ async function registerAccount(accountData, proxyUrl) {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     });
 
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
     // Buka halaman referral dulu
     console.log('📄 Membuka halaman referral...');
-    try {
-      await page.goto(CONFIG.baseUrl, { 
-        waitUntil: 'domcontentloaded',
-        timeout: 30000 
-      });
-    } catch (error) {
-      console.log('⚠️  Timeout saat load referral page, melanjutkan...');
-    }
+    await page.goto(CONFIG.baseUrl, { 
+      waitUntil: 'networkidle0',
+      timeout: 60000 
+    }).catch(() => console.log('⚠️  Timeout pada referral page, melanjutkan...'));
     
     // Tunggu Cloudflare bypass
-    await waitForCloudflareBypass(page, CONFIG.cloudflareTimeout);
+    const bypassSuccess = await waitForCloudflareBypass(page, CONFIG.cloudflareTimeout);
     
-    console.log('⏳ Menunggu halaman stabil...');
+    if (!bypassSuccess) {
+      console.log('⚠️  Cloudflare bypass timeout, mencoba lanjut...');
+    }
+    
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     // Screenshot setelah bypass
-    await page.screenshot({ path: 'after_cloudflare_bypass.png', fullPage: true });
-    console.log('📸 Screenshot after bypass: after_cloudflare_bypass.png');
+    await page.screenshot({ path: 'step1_after_referral.png', fullPage: true });
+    console.log('📸 Screenshot: step1_after_referral.png');
 
     // Navigate ke halaman registrasi
     console.log('📄 Membuka halaman registrasi...');
-    try {
-      await page.goto(CONFIG.regUrl, { 
-        waitUntil: 'domcontentloaded',
-        timeout: 30000 
-      });
-    } catch (error) {
-      console.log('⚠️  Timeout saat load registration page, melanjutkan...');
-    }
+    await page.goto(CONFIG.regUrl, { 
+      waitUntil: 'networkidle0',
+      timeout: 60000 
+    }).catch(() => console.log('⚠️  Timeout pada registration page, melanjutkan...'));
     
-    // Tunggu Cloudflare bypass lagi (jika ada di halaman register)
+    // Tunggu Cloudflare bypass lagi
     await waitForCloudflareBypass(page, CONFIG.cloudflareTimeout);
     
-    console.log('⏳ Menunggu form registrasi load...');
+    console.log('⏳ Menunggu form load...');
     await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // Check apakah form ada dengan lebih detail
-    const formInfo = await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input');
-      const buttons = document.querySelectorAll('button');
-      const forms = document.querySelectorAll('form');
-      
+    // Ambil info halaman
+    const pageInfo = await page.evaluate(() => {
+      const inputs = Array.from(document.querySelectorAll('input'));
       return {
         inputCount: inputs.length,
-        buttonCount: buttons.length,
-        formCount: forms.length,
-        bodyText: document.body.innerText.substring(0, 500),
+        inputs: inputs.map(i => ({
+          type: i.type,
+          name: i.name,
+          placeholder: i.placeholder,
+        })),
         title: document.title,
+        url: window.location.href,
+        bodyLength: document.body.innerText.length,
+        bodyPreview: document.body.innerText.substring(0, 200),
       };
     });
 
     console.log('📊 Info halaman:');
-    console.log(`   Input: ${formInfo.inputCount}`);
-    console.log(`   Button: ${formInfo.buttonCount}`);
-    console.log(`   Form: ${formInfo.formCount}`);
-    console.log(`   Title: ${formInfo.title}`);
+    console.log(`   URL: ${pageInfo.url}`);
+    console.log(`   Title: ${pageInfo.title}`);
+    console.log(`   Input count: ${pageInfo.inputCount}`);
+    console.log(`   Body length: ${pageInfo.bodyLength}`);
+    
+    if (pageInfo.inputCount > 0) {
+      console.log('   Input fields:');
+      pageInfo.inputs.forEach((inp, idx) => {
+        console.log(`     ${idx + 1}. Type: ${inp.type}, Name: ${inp.name}, Placeholder: ${inp.placeholder}`);
+      });
+    }
 
-    if (formInfo.inputCount === 0) {
-      // Screenshot untuk debug
-      await page.screenshot({ path: 'no_form_found.png', fullPage: true });
-      console.log('📸 Screenshot: no_form_found.png');
-      
-      throw new Error(`Form registrasi tidak ditemukan. Input: ${formInfo.inputCount}, Body preview: ${formInfo.bodyText.substring(0, 100)}`);
+    // Screenshot form
+    await page.screenshot({ path: 'step2_registration_page.png', fullPage: true });
+    console.log('📸 Screenshot: step2_registration_page.png');
+
+    if (pageInfo.inputCount === 0) {
+      throw new Error('Form tidak ditemukan. Kemungkinan masih blocked oleh Cloudflare.');
     }
 
     console.log('✅ Form registrasi ditemukan!');
 
-    // Screenshot untuk debug
-    await page.screenshot({ path: 'registration_form.png', fullPage: true });
-    console.log('📸 Screenshot disimpan: registration_form.png');
-
     // Get captcha number
     const captchaNumber = await getCaptchaNumber(page);
 
-    // Isi form registrasi
+    // Isi form dengan metode yang lebih reliable
     console.log('✏️  Mengisi form registrasi...');
     
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await page.waitForTimeout(1000);
 
-    // Isi dengan evaluate
-    const fillSuccess = await page.evaluate((data, captcha) => {
+    const fillResult = await page.evaluate((data, captcha) => {
+      const results = {};
+      
       try {
-        // Login/Username
-        const loginInput = document.querySelector('input[placeholder*="Login"], input[name*="login"], input[name*="username"]');
-        if (loginInput) {
-          loginInput.value = data.username;
-          loginInput.dispatchEvent(new Event('input', { bubbles: true }));
-          loginInput.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-
-        // Email
-        const emailInput = document.querySelector('input[placeholder*="Email"], input[type="email"], input[name*="email"]');
-        if (emailInput) {
-          emailInput.value = data.email;
-          emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-          emailInput.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-
-        // Password
-        const passwordInput = document.querySelector('input[placeholder*="Password"], input[type="password"], input[name*="password"]');
-        if (passwordInput) {
-          passwordInput.value = data.password;
-          passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
-          passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-
-        // Number/Captcha
-        if (captcha) {
-          const numberInput = document.querySelector('input[placeholder*="Number"], input[name*="number"], input[name*="captcha"]');
-          if (numberInput) {
-            numberInput.value = captcha;
-            numberInput.dispatchEvent(new Event('input', { bubbles: true }));
-            numberInput.dispatchEvent(new Event('change', { bubbles: true }));
+        // Username/Login
+        const loginSelectors = [
+          'input[placeholder*="Login" i]',
+          'input[name*="login" i]',
+          'input[name*="username" i]',
+          'input[placeholder*="Username" i]',
+        ];
+        
+        for (const selector of loginSelectors) {
+          const input = document.querySelector(selector);
+          if (input) {
+            input.focus();
+            input.value = data.username;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            results.username = true;
+            break;
           }
         }
 
-        return true;
+        // Email
+        const emailSelectors = [
+          'input[type="email"]',
+          'input[placeholder*="Email" i]',
+          'input[name*="email" i]',
+        ];
+        
+        for (const selector of emailSelectors) {
+          const input = document.querySelector(selector);
+          if (input) {
+            input.focus();
+            input.value = data.email;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            results.email = true;
+            break;
+          }
+        }
+
+        // Password
+        const passwordSelectors = [
+          'input[type="password"]',
+          'input[placeholder*="Password" i]',
+          'input[name*="password" i]',
+        ];
+        
+        for (const selector of passwordSelectors) {
+          const input = document.querySelector(selector);
+          if (input) {
+            input.focus();
+            input.value = data.password;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            results.password = true;
+            break;
+          }
+        }
+
+        // Captcha/Number
+        if (captcha) {
+          const numberSelectors = [
+            'input[placeholder*="Number" i]',
+            'input[name*="number" i]',
+            'input[name*="captcha" i]',
+          ];
+          
+          for (const selector of numberSelectors) {
+            const input = document.querySelector(selector);
+            if (input) {
+              input.focus();
+              input.value = captcha;
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              results.captcha = true;
+              break;
+            }
+          }
+        }
+
+        return results;
       } catch (e) {
-        console.error('Error filling form:', e);
-        return false;
+        return { error: e.message };
       }
     }, accountData, captchaNumber);
 
-    if (fillSuccess) {
-      console.log(`   ✓ Username: ${accountData.username}`);
-      console.log(`   ✓ Email: ${accountData.email}`);
-      console.log(`   ✓ Password: ${accountData.password}`);
-      if (captchaNumber) {
-        console.log(`   ✓ Captcha: ${captchaNumber}`);
-      }
-    } else {
-      throw new Error('Gagal mengisi form');
-    }
+    console.log('   Hasil pengisian form:', fillResult);
+    
+    if (fillResult.username) console.log(`   ✓ Username: ${accountData.username}`);
+    if (fillResult.email) console.log(`   ✓ Email: ${accountData.email}`);
+    if (fillResult.password) console.log(`   ✓ Password: ${accountData.password}`);
+    if (fillResult.captcha) console.log(`   ✓ Captcha: ${captchaNumber}`);
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await page.waitForTimeout(2000);
 
     // Screenshot form terisi
-    await page.screenshot({ path: 'form_filled.png', fullPage: true });
-    console.log('📸 Screenshot form terisi: form_filled.png');
+    await page.screenshot({ path: 'step3_form_filled.png', fullPage: true });
+    console.log('📸 Screenshot: step3_form_filled.png');
 
     // Submit form
-    console.log('📤 Mengirim form registrasi...');
+    console.log('📤 Mengirim form...');
     
-    const submitSuccess = await page.evaluate(() => {
+    const submitResult = await page.evaluate(() => {
       // Cari tombol submit
-      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a[onclick]'));
-      const submitBtn = buttons.find(btn => {
+      const buttonSelectors = [
+        'button[type="submit"]',
+        'input[type="submit"]',
+        'button:contains("Create")',
+        'button:contains("Register")',
+        'button:contains("Sign")',
+      ];
+      
+      // Cari semua button dan cek text
+      const allButtons = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+      const submitBtn = allButtons.find(btn => {
         const text = (btn.textContent || btn.value || '').toLowerCase();
         return text.includes('create') || 
                text.includes('register') || 
                text.includes('submit') ||
-               text.includes('sign up') ||
-               text.includes('daftar');
+               text.includes('sign up');
       });
       
       if (submitBtn) {
         submitBtn.click();
-        return true;
+        return { success: true, method: 'button click' };
       }
       
-      // Coba submit form secara langsung
+      // Coba submit form
       const form = document.querySelector('form');
       if (form) {
         form.submit();
-        return true;
+        return { success: true, method: 'form submit' };
       }
       
-      return false;
+      return { success: false, error: 'Submit button not found' };
     });
 
-    if (!submitSuccess) {
+    console.log('   Submit result:', submitResult);
+
+    if (!submitResult.success) {
       throw new Error('Tombol submit tidak ditemukan');
     }
     
     console.log('✅ Form berhasil di-submit!');
     
     // Tunggu response
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await page.waitForTimeout(5000);
     
     // Screenshot hasil
-    await page.screenshot({ path: 'after_submit.png', fullPage: true });
-    console.log('📸 Screenshot hasil: after_submit.png');
+    await page.screenshot({ path: 'step4_after_submit.png', fullPage: true });
+    console.log('📸 Screenshot: step4_after_submit.png');
     
     // Cek hasil
-    const currentUrl = page.url();
-    const pageContent = await page.content().catch(() => '');
+    const finalInfo = await page.evaluate(() => ({
+      url: window.location.href,
+      title: document.title,
+      bodyPreview: document.body.innerText.substring(0, 300),
+    }));
+    
+    console.log('📊 Hasil akhir:');
+    console.log(`   URL: ${finalInfo.url}`);
+    console.log(`   Title: ${finalInfo.title}`);
     
     // Indikator sukses
     const isSuccess = 
-      !currentUrl.includes('pages=reg') &&
-      !pageContent.toLowerCase().includes('error') &&
-      !pageContent.toLowerCase().includes('failed') &&
-      !pageContent.toLowerCase().includes('invalid');
+      !finalInfo.url.includes('pages=reg') &&
+      !finalInfo.bodyPreview.toLowerCase().includes('error') &&
+      !finalInfo.bodyPreview.toLowerCase().includes('failed') &&
+      !finalInfo.bodyPreview.toLowerCase().includes('invalid');
 
-    // Simpan hasil
     const result = {
       success: isSuccess,
       username: accountData.username,
@@ -442,16 +521,14 @@ async function registerAccount(accountData, proxyUrl) {
       captcha: captchaNumber,
       proxy: proxyUrl || 'No proxy',
       timestamp: new Date().toISOString(),
-      finalUrl: currentUrl,
+      finalUrl: finalInfo.url,
     };
 
     if (result.success) {
       console.log('✅ Registrasi BERHASIL!');
-      console.log(`   Final URL: ${currentUrl}`);
       saveAccount(result);
     } else {
-      console.log('❌ Registrasi GAGAL!');
-      console.log(`   Final URL: ${currentUrl}`);
+      console.log('❌ Registrasi GAGAL (atau perlu verifikasi manual)');
     }
 
     return result;
@@ -459,14 +536,11 @@ async function registerAccount(accountData, proxyUrl) {
   } catch (error) {
     console.error('❌ Error:', error.message);
     
-    // Screenshot error jika page ada
     if (page) {
       try {
         await page.screenshot({ path: 'error_screenshot.png', fullPage: true });
         console.log('📸 Error screenshot: error_screenshot.png');
-      } catch (e) {
-        // Ignore screenshot error
-      }
+      } catch (e) {}
     }
     
     return {
@@ -478,9 +552,7 @@ async function registerAccount(accountData, proxyUrl) {
     if (browser) {
       try {
         await browser.close();
-      } catch (e) {
-        console.log('⚠️  Error closing browser:', e.message);
-      }
+      } catch (e) {}
     }
   }
 }
@@ -496,13 +568,14 @@ function saveAccount(accountData) {
 
 // Main function
 async function main() {
-  console.log('🎮 GAMETY.ORG AUTO REGISTER (Real Browser Method)');
+  console.log('🎮 GAMETY.ORG AUTO REGISTER (Puppeteer Stealth)');
   console.log('='.repeat(60));
   
   proxyList = loadProxies();
   
   console.log(`📊 Target: ${CONFIG.accountsToCreate} akun`);
-  console.log(`🌐 Proxy: ${proxyList.length > 0 ? proxyList.length + ' proxy (rotating)' : 'Tanpa proxy'}`);
+  console.log(`🌐 Proxy: ${proxyList.length > 0 ? proxyList.length + ' proxy' : 'Tanpa proxy'}`);
+  console.log(`🤖 Headless: ${CONFIG.headless}`);
   console.log('='.repeat(60));
 
   const results = {
@@ -524,23 +597,20 @@ async function main() {
       results.failed++;
     }
 
-    // Delay sebelum registrasi berikutnya
     if (i < CONFIG.accountsToCreate - 1) {
       console.log(`⏱️  Menunggu ${CONFIG.delayBetweenRegistrations / 1000} detik...`);
       await new Promise(resolve => setTimeout(resolve, CONFIG.delayBetweenRegistrations));
     }
   }
 
-  // Summary
   console.log('\n' + '='.repeat(60));
   console.log('📊 SUMMARY');
   console.log('='.repeat(60));
   console.log(`✅ Berhasil: ${results.success}`);
   console.log(`❌ Gagal: ${results.failed}`);
   console.log(`📈 Success Rate: ${((results.success / CONFIG.accountsToCreate) * 100).toFixed(2)}%`);
-  console.log(`📁 Akun tersimpan di: registered_accounts.txt`);
+  console.log(`📁 File: registered_accounts.txt`);
   console.log('='.repeat(60));
 }
 
-// Jalankan script
 main().catch(console.error);
