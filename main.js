@@ -126,21 +126,31 @@ async function registerAccount(accountData, proxyUrl) {
     console.log(`🚀 Memulai registrasi akun: ${accountData.username}`);
     console.log('='.repeat(60));
 
-    // Setup real browser dengan cloudflare bypass
+    // Setup real browser dengan konfigurasi yang diperbaiki
     const connectOptions = {
-      headless: false, // Set true untuk production
+      headless: 'auto', // Ubah ke 'auto' untuk kompatibilitas lebih baik
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-blink-features=AutomationControlled',
+        '--window-size=1920,1080',
       ],
-      turnstile: true, // Enable Cloudflare Turnstile bypass
+      turnstile: true,
       connectOption: {
-        defaultViewport: null,
+        defaultViewport: {
+          width: 1920,
+          height: 1080
+        },
       },
-      disableXvfb: true, // Untuk server headless
+      disableXvfb: false, // Ubah ke false
       ignoreAllFlags: false,
+      customConfig: {},
+      // Tambahkan executablePath jika Chrome tidak terdeteksi
+      // executablePath: '/usr/bin/google-chrome', // Uncomment jika perlu
     };
 
     // Add proxy jika ada
@@ -152,29 +162,67 @@ async function registerAccount(accountData, proxyUrl) {
     }
 
     console.log('🌐 Menginisialisasi real browser...');
-    const response = await connect(connectOptions);
+    
+    // Tambahkan timeout dan error handling yang lebih baik
+    let response;
+    try {
+      response = await Promise.race([
+        connect(connectOptions),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Browser startup timeout')), 60000)
+        )
+      ]);
+    } catch (error) {
+      console.error('❌ Error saat connect browser:', error.message);
+      
+      // Coba lagi tanpa proxy jika error terkait proxy
+      if (proxyUrl && error.message.includes('ECONNREFUSED')) {
+        console.log('⚠️  Mencoba lagi tanpa proxy...');
+        connectOptions.args = connectOptions.args.filter(arg => !arg.includes('--proxy-server'));
+        response = await connect(connectOptions);
+      } else {
+        throw error;
+      }
+    }
     
     browser = response.browser;
     page = response.page;
 
     console.log('✅ Real browser berhasil diinisialisasi');
 
+    // Set extra headers untuk bypass detection
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    });
+
+    // Set user agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
     // Buka halaman referral dulu
     console.log('📄 Membuka halaman referral...');
-    await page.goto(CONFIG.baseUrl, { 
-      waitUntil: 'networkidle2',
-      timeout: 60000 
-    });
+    try {
+      await page.goto(CONFIG.baseUrl, { 
+        waitUntil: 'domcontentloaded',
+        timeout: 30000 
+      });
+    } catch (error) {
+      console.log('⚠️  Timeout saat load referral page, melanjutkan...');
+    }
     
     console.log('⏳ Menunggu halaman load...');
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     // Navigate ke halaman registrasi
     console.log('📄 Membuka halaman registrasi...');
-    await page.goto(CONFIG.regUrl, { 
-      waitUntil: 'networkidle2',
-      timeout: 60000 
-    });
+    try {
+      await page.goto(CONFIG.regUrl, { 
+        waitUntil: 'domcontentloaded',
+        timeout: 30000 
+      });
+    } catch (error) {
+      console.log('⚠️  Timeout saat load registration page, melanjutkan...');
+    }
     
     console.log('⏳ Menunggu form registrasi load...');
     await new Promise(resolve => setTimeout(resolve, 5000));
@@ -361,7 +409,11 @@ async function registerAccount(accountData, proxyUrl) {
     };
   } finally {
     if (browser) {
-      await browser.close();
+      try {
+        await browser.close();
+      } catch (e) {
+        console.log('⚠️  Error closing browser:', e.message);
+      }
     }
   }
 }
