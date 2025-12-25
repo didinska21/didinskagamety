@@ -1,30 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * Gamety.org Auto Register Bot - FIXED VERSION
+ * Gamety.org Auto Register Bot - PUPPETEER VERSION
  * Website: https://gamety.org
  * 
- * @description Automated account registration with referral
+ * @description Full browser automation dengan Puppeteer
  * @features:
+ * - Puppeteer + Chromium (real browser)
+ * - Auto OCR captcha (Tesseract)
+ * - Proxy rotating support
  * - Auto temporary email
- * - Captcha solver (number detection)
- * - Proxy support with SSL fix
- * - Multi-account creation
- * - Better error handling
+ * - Human-like behavior
+ * - Screenshot on error
  */
 
 // ========================================
 // DEPENDENCIES
 // ========================================
 
+const puppeteer = require('puppeteer');
 const inquirer = require('inquirer');
 const fs = require('fs');
 const axios = require('axios');
-const { HttpsProxyAgent } = require('https-proxy-agent');
+const Tesseract = require('tesseract.js');
 const cfonts = require('cfonts');
 const UserAgent = require('user-agents');
-const cheerio = require('cheerio');
-const https = require('https');
 
 // ========================================
 // CONSTANTS
@@ -36,104 +36,22 @@ const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const BLUE = '\x1b[34m';
 const CYAN = '\x1b[36m';
-const WHITE = '\x1b[37m';
 const BOLD = '\x1b[1m';
 
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-// Base URLs
 const BASE_URL = 'https://gamety.org';
 const REG_URL = BASE_URL + '/?pages=reg';
-const REFERRAL_CODE = '218053'; // Your referral code
-
-// Email providers
-const EMAIL_PROVIDERS = ['mail.tm', 'guerrillamail'];
+const REFERRAL_CODE = '218053';
 
 // ========================================
 // UTILITY FUNCTIONS
 // ========================================
 
-function createSpinner(message) {
-  let frameIndex = 0;
-  let interval = null;
-  let isActive = false;
-
-  function clearLine() {
-    try {
-      process.stdout.clearLine(0);
-      process.stdout.cursorTo(0);
-    } catch (error) {}
-  }
-
-  return {
-    start() {
-      if (isActive) return;
-      isActive = true;
-      clearLine();
-      process.stdout.write(`${CYAN}${SPINNER_FRAMES[frameIndex]} ${message}${RESET}`);
-      interval = setInterval(() => {
-        frameIndex = (frameIndex + 1) % SPINNER_FRAMES.length;
-        clearLine();
-        process.stdout.write(`${CYAN}${SPINNER_FRAMES[frameIndex]} ${message}${RESET}`);
-      }, 100);
-    },
-    succeed(msg) {
-      if (!isActive) return;
-      clearInterval(interval);
-      isActive = false;
-      clearLine();
-      process.stdout.write(`${GREEN}${BOLD}✔ ${msg}${RESET}\n`);
-    },
-    fail(msg) {
-      if (!isActive) return;
-      clearInterval(interval);
-      isActive = false;
-      clearLine();
-      process.stdout.write(`${RED}✖ ${msg}${RESET}\n`);
-    },
-    stop() {
-      if (!isActive) return;
-      clearInterval(interval);
-      isActive = false;
-      clearLine();
-    }
-  };
-}
-
-function centerText(text) {
-  const terminalWidth = process.stdout.columns || 80;
-  const textLength = text.replace(/\x1b\[[0-9;]*m/g, '').length;
-  const padding = Math.max(0, Math.floor((terminalWidth - textLength) / 2));
-  return ' '.repeat(padding) + text;
-}
-
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function countdown(milliseconds, message = 'Tunggu') {
-  const seconds = Math.floor(milliseconds / 1000);
-  for (let i = seconds; i > 0; i--) {
-    process.stdout.write(`${YELLOW}\r${message} ${i} detik...${RESET}`);
-    await delay(1000);
-  }
-  process.stdout.write('\r' + ' '.repeat(50) + '\r');
-}
-
-function readProxiesFromFile(filename) {
-  try {
-    const fileContent = fs.readFileSync(filename, 'utf8');
-    return fileContent.split('\n').map(line => line.trim()).filter(line => line !== '');
-  } catch (error) {
-    console.log(RED + 'Gagal membaca file proxy.txt: ' + error.message + RESET);
-    return [];
-  }
-}
-
-function generateRandomUsername() {
-  const prefix = 'user';
-  const random = Math.random().toString(36).substring(2, 10);
-  return prefix + random;
+function randomDelay(min = 500, max = 1500) {
+  return delay(Math.floor(Math.random() * (max - min + 1)) + min);
 }
 
 function generateRandomPassword() {
@@ -144,6 +62,23 @@ function generateRandomPassword() {
     password += charset.charAt(Math.floor(Math.random() * charset.length));
   }
   return password;
+}
+
+function readProxiesFromFile(filename) {
+  try {
+    const fileContent = fs.readFileSync(filename, 'utf8');
+    return fileContent.split('\n').map(line => line.trim()).filter(line => line !== '');
+  } catch (error) {
+    console.log(RED + 'Gagal membaca proxy.txt' + RESET);
+    return [];
+  }
+}
+
+function saveAccount(email, password, status = 'success') {
+  const timestamp = new Date().toISOString();
+  const accountData = `${email}|${password}|${status}|${timestamp}\n`;
+  fs.appendFileSync('accounts.txt', accountData);
+  console.log(GREEN + '💾 Akun disimpan ke accounts.txt' + RESET);
 }
 
 // ========================================
@@ -157,485 +92,312 @@ function displayBanner() {
     align: 'center',
     colors: ['cyan', 'magenta']
   });
-
-  console.log(centerText(BLUE + '☆ Telegram Channel: @airdropwithmeh ☆' + RESET));
-  console.log(centerText(CYAN + '☆ BOT AUTO REGISTER GAMETY.ORG ☆' + RESET));
-  console.log(centerText(GREEN + '☆ FIXED VERSION - SSL & CAPTCHA ☆' + RESET + '\n'));
+  console.log('\n');
+  console.log(CYAN + '          ╔════════════════════════════════════════╗' + RESET);
+  console.log(CYAN + '          ║     PUPPETEER + OCR + PROXY ROTATION   ║' + RESET);
+  console.log(CYAN + '          ║      @airdropwithmeh - Gamety Bot      ║' + RESET);
+  console.log(CYAN + '          ╚════════════════════════════════════════╝' + RESET);
+  console.log('\n');
 }
 
 // ========================================
 // EMAIL FUNCTIONS
 // ========================================
 
-async function getTempEmail(provider, axiosInstance, ipAddress, userAgent) {
+async function getTempEmail() {
+  try {
+    console.log(CYAN + '📧 Membuat temporary email...' + RESET);
 
-  // Mail.tm provider
-  if (provider === 'mail.tm') {
-    try {
-      let domains = [];
-      let page = 1;
+    // Get domains
+    const domainsResponse = await axios.get('https://api.mail.tm/domains');
+    const domains = domainsResponse.data['hydra:member'].filter(d => d.isActive && !d.isPrivate);
 
-      // Fetch available domains
-      while (true) {
-        const url = 'https://api.mail.tm/domains?page=' + page;
-        const response = await axios.get(url);
+    if (domains.length === 0) {
+      throw new Error('No domains available');
+    }
 
-        if (response.status !== 200) {
-          throw new Error('Failed to fetch domains');
-        }
+    const selectedDomain = domains[Math.floor(Math.random() * domains.length)];
+    const randomLogin = Math.random().toString(36).substring(2, 15);
+    const emailAddress = randomLogin + '@' + selectedDomain.domain;
+    const password = 'Password123!';
 
-        const data = response.data;
-        const domainList = data['hydra:member'] || [];
-        const activeDomains = domainList.filter(d => d.isActive && !d.isPrivate);
+    // Create account
+    const registerResponse = await axios.post('https://api.mail.tm/accounts', {
+      address: emailAddress,
+      password: password
+    });
 
-        domains = domains.concat(activeDomains);
-
-        if (!data['hydra:view'] || !data['hydra:view']['hydra:next']) {
-          break;
-        }
-        page++;
-        if (page > 3) break; // Limit to 3 pages
-      }
-
-      if (domains.length <= 0) {
-        throw new Error('No domains available');
-      }
-
-      // Select random domain
-      const selectedDomain = domains[Math.floor(Math.random() * domains.length)];
-      const domainName = selectedDomain.domain;
-
-      // Generate random login
-      const randomLogin = Math.random().toString(36).substring(2, 15);
-      const emailAddress = randomLogin + '@' + domainName;
-      const password = 'Password123!';
-      const apiUrl = 'https://api.mail.tm/accounts';
-
-      const payload = {
+    if (registerResponse.status === 201) {
+      console.log(GREEN + '✅ Email: ' + emailAddress + RESET);
+      return {
         address: emailAddress,
         password: password
       };
-
-      const registerResponse = await axios.post(apiUrl, payload);
-
-      if (registerResponse.status === 201) {
-        console.log(GREEN + '📧 Email berhasil dibuat: ' + emailAddress + RESET);
-        return {
-          provider: 'mail.tm',
-          address: emailAddress,
-          password: password,
-          login: randomLogin,
-          domain: domainName
-        };
-      } else {
-        throw new Error('Account creation failed');
-      }
-
-    } catch (error) {
-      console.log(RED + 'Gagal membuat temp email: ' + error.message + RESET);
-      return null;
-    }
-  }
-
-  // Guerrillamail provider
-  if (provider === 'guerrillamail') {
-    const url = 'https://api.guerrillamail.com/ajax.php';
-    const params = {
-      f: 'get_email_address',
-      lang: 'en',
-      ip: ipAddress,
-      agent: userAgent
-    };
-
-    try {
-      const response = await axiosInstance.get(url, { params: params });
-      const data = response.data;
-      const emailAddress = data.email_addr;
-      const sidToken = data.sid_token || '';
-
-      console.log(GREEN + '📧 Email berhasil dibuat: ' + emailAddress + RESET);
-
-      return {
-        provider: 'guerrillamail',
-        address: emailAddress,
-        sid_token: sidToken
-      };
-
-    } catch (error) {
-      console.log(RED + 'Failed to generate temp email: ' + error.message + RESET);
-      return null;
-    }
-  }
-
-  return null;
-}
-
-// ========================================
-// IP ADDRESS FUNCTION
-// ========================================
-
-async function getIpAddress(axiosInstance) {
-  try {
-    const response = await axiosInstance.get('https://api.ipify.org?format=json', {
-      timeout: 10000
-    });
-    return response.data.ip;
-  } catch (error) {
-    console.log(YELLOW + '⚠️  Could not get IP: ' + error.message + RESET);
-    return 'unknown';
-  }
-}
-
-// ========================================
-// REGISTRATION FUNCTIONS - IMPROVED
-// ========================================
-
-async function getRegistrationForm(axiosInstance) {
-  const spinner = createSpinner('Mengambil form registrasi...');
-  spinner.start();
-
-  try {
-    const response = await axiosInstance.get(REG_URL, {
-      headers: {
-        'User-Agent': new UserAgent().toString(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': BASE_URL,
-        'Connection': 'keep-alive'
-      },
-      timeout: 30000
-    });
-
-    const html = response.data;
-    const $ = cheerio.load(html);
-
-    // Extract hidden key field
-    const keyValue = $('input[name="key"]').attr('value');
-
-    // Extract captcha number - IMPROVED METHOD
-    let captchaAnswer = '';
-
-    // Method 1: Look for the captcha number displayed on page
-    // Based on screenshot: number is displayed next to "Number" field
-    const captchaElements = [
-      'input[name="number"] + *',  // Element after number input
-      '.captcha-display',
-      '#captcha-number',
-      '[class*="captcha"]',
-      'input[name="number"]'
-    ];
-
-    for (const selector of captchaElements) {
-      const element = $(selector);
-      if (element.length) {
-        const text = element.text().trim() || element.attr('placeholder') || element.attr('value');
-        if (text && /^\d{4,}$/.test(text)) {
-          captchaAnswer = text;
-          break;
-        }
-      }
     }
 
-    // Method 2: Search in entire HTML for 4+ digit numbers near "number" field
-    if (!captchaAnswer) {
-      const numberFieldIndex = html.indexOf('name="number"');
-      if (numberFieldIndex > -1) {
-        const surrounding = html.substring(numberFieldIndex, numberFieldIndex + 500);
-        const match = surrounding.match(/>(\d{4,})</);
-        if (match) {
-          captchaAnswer = match[1];
-        }
-      }
-    }
-
-    // Method 3: Look for any 4-digit number pattern
-    if (!captchaAnswer) {
-      const allNumbers = html.match(/>(\d{4})</g);
-      if (allNumbers && allNumbers.length > 0) {
-        captchaAnswer = allNumbers[0].replace(/[><]/g, '');
-      }
-    }
-
-    // Get cookies
-    const cookies = response.headers['set-cookie'] || [];
-
-    if (!keyValue) {
-      spinner.fail('Key tidak ditemukan');
-      return null;
-    }
-
-    if (!captchaAnswer) {
-      spinner.fail('Captcha tidak ditemukan');
-      console.log(YELLOW + '💡 Tip: Coba akses manual ke ' + REG_URL + ' untuk cek captcha' + RESET);
-      return null;
-    }
-
-    spinner.succeed('Form registrasi berhasil diambil');
-
-    return {
-      key: keyValue,
-      captcha: captchaAnswer,
-      cookies: cookies
-    };
+    throw new Error('Failed to create email');
 
   } catch (error) {
-    spinner.fail('Gagal mengambil form: ' + error.message);
+    console.log(RED + '❌ Gagal membuat email: ' + error.message + RESET);
     return null;
   }
 }
 
-async function registerAccount(email, password, captcha, key, axiosInstance, cookies) {
-  const spinner = createSpinner('Mendaftarkan akun...');
-  spinner.start();
-
-  try {
-    const username = email.split('@')[0];
-
-    // Prepare form data - sesuai dengan field di screenshot
-    const formData = new URLSearchParams();
-    formData.append('name', username);      // Login field
-    formData.append('email', email);         // Email field
-    formData.append('pass', password);       // Password field
-    formData.append('pass2', password);      // Confirm password (jika ada)
-    formData.append('number', captcha);      // Number captcha
-    formData.append('ref', REFERRAL_CODE);   // Referral
-    formData.append('key', key);             // Hidden key
-    formData.append('sub_reg', '');          // Submit button
-
-    // Prepare headers
-    const headers = {
-      'User-Agent': new UserAgent().toString(),
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.5',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Origin': BASE_URL,
-      'Referer': REG_URL,
-      'Connection': 'keep-alive',
-      'Cookie': cookies.map(c => c.split(';')[0]).join('; ')
-    };
-
-    const response = await axiosInstance.post(REG_URL, formData.toString(), {
-      headers: headers,
-      maxRedirects: 5,
-      validateStatus: status => status < 500,
-      timeout: 30000
-    });
-
-    const html = response.data.toLowerCase();
-
-    // Check for success indicators
-    if (html.includes('successfully') || html.includes('success') || 
-        html.includes('registered') || html.includes('welcome') ||
-        response.status === 302 || html.includes('dashboard')) {
-      spinner.succeed('Akun berhasil didaftarkan!');
-      return true;
-    } else if (html.includes('already exists') || html.includes('already registered') ||
-               html.includes('sudah terdaftar')) {
-      spinner.fail('Email/Username sudah terdaftar');
-      return false;
-    } else if (html.includes('captcha') || html.includes('wrong') || 
-               html.includes('incorrect') || html.includes('invalid')) {
-      spinner.fail('Captcha salah atau form invalid');
-      return false;
-    } else if (html.includes('error')) {
-      spinner.fail('Error dari server');
-      return false;
-    } else {
-      // Assume success if no error
-      spinner.succeed('Akun berhasil didaftarkan!');
-      return true;
-    }
-
-  } catch (error) {
-    if (error.response && error.response.status === 302) {
-      spinner.succeed('Akun berhasil didaftarkan! (redirect)');
-      return true;
-    }
-    spinner.fail('Error saat registrasi: ' + error.message);
-    return false;
-  }
-}
-
 // ========================================
-// ACCOUNT MANAGEMENT
+// OCR CAPTCHA SOLVER
 // ========================================
 
-async function loginAccount(email, password, axiosInstance) {
-  const spinner = createSpinner('Login ke akun...');
-  spinner.start();
-
+async function solveCaptcha(imagePath) {
   try {
-    // Get login page first to get key
-    const loginPageResponse = await axiosInstance.get(BASE_URL, {
-      headers: {
-        'User-Agent': new UserAgent().toString()
-      },
-      timeout: 30000
-    });
+    console.log(CYAN + '🔍 Membaca captcha dengan OCR...' + RESET);
 
-    const $ = cheerio.load(loginPageResponse.data);
-    const loginKey = $('input[name="key"]').first().attr('value');
-    const cookies = loginPageResponse.headers['set-cookie'] || [];
-
-    if (!loginKey) {
-      spinner.fail('Login key tidak ditemukan');
-      return false;
-    }
-
-    // Prepare login data
-    const formData = new URLSearchParams();
-    formData.append('email', email);
-    formData.append('pass', password);
-    formData.append('key', loginKey);
-    formData.append('sub_aut', '');
-
-    const response = await axiosInstance.post('/?pages=aut', formData.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Cookie': cookies.map(c => c.split(';')[0]).join('; ')
-      },
-      maxRedirects: 5,
-      timeout: 30000
-    });
-
-    const html = response.data.toLowerCase();
-
-    if (html.includes('logout') || html.includes('dashboard') || 
-        html.includes('balance') || html.includes('profile')) {
-      spinner.succeed('Login berhasil!');
-      return true;
-    } else {
-      spinner.succeed('Registrasi berhasil (skip login)');
-      return true;
-    }
-
-  } catch (error) {
-    spinner.stop();
-    console.log(YELLOW + '⚠️  Skip login verification' + RESET);
-    return true;
-  }
-}
-
-function saveAccount(email, password, status = 'success') {
-  const timestamp = new Date().toISOString();
-  const accountData = `${email}|${password}|${status}|${timestamp}\n`;
-
-  try {
-    fs.appendFileSync('accounts.txt', accountData);
-    console.log(GREEN + '💾 Akun disimpan ke accounts.txt' + RESET);
-  } catch (error) {
-    console.log(RED + 'Gagal menyimpan akun: ' + error.message + RESET);
-  }
-}
-
-// ========================================
-// MAIN PROCESS - IMPROVED
-// ========================================
-
-async function createAccount(proxy = null, emailProvider = 'mail.tm') {
-  console.log('\n' + CYAN + '═'.repeat(60) + RESET);
-  console.log(BOLD + '🚀 Memulai proses pembuatan akun...' + RESET);
-  console.log(CYAN + '═'.repeat(60) + RESET + '\n');
-
-  // Setup axios with FIXED proxy configuration
-  const axiosConfig = {
-    timeout: 30000,
-    headers: {
-      'User-Agent': new UserAgent().toString()
-    },
-    // FIX: Disable SSL verification for proxy
-    httpsAgent: new https.Agent({
-      rejectUnauthorized: false,
-      keepAlive: true
-    })
-  };
-
-  if (proxy) {
-    try {
-      axiosConfig.httpsAgent = new HttpsProxyAgent(proxy, {
-        rejectUnauthorized: false
-      });
-      axiosConfig.proxy = false;
-      console.log(YELLOW + '🔒 Menggunakan proxy: ' + proxy.split('@')[1] || proxy + RESET);
-    } catch (err) {
-      console.log(RED + '❌ Proxy invalid: ' + err.message + RESET);
-      return false;
-    }
-  }
-
-  const axiosInstance = axios.create(axiosConfig);
-
-  try {
-    // 1. Get IP Address
-    const ipAddress = await getIpAddress(axiosInstance);
-    console.log(CYAN + '🌐 IP Address: ' + ipAddress + RESET);
-
-    // 2. Generate temp email
-    const emailData = await getTempEmail(emailProvider, axiosInstance, ipAddress, new UserAgent().toString());
-    if (!emailData) {
-      console.log(RED + '❌ Gagal membuat email' + RESET);
-      return false;
-    }
-
-    // 3. Generate password
-    const password = generateRandomPassword();
-    console.log(GREEN + '🔑 Password: ' + password + RESET);
-
-    // Small delay before accessing registration page
-    await delay(2000);
-
-    // 4. Get registration form
-    const formData = await getRegistrationForm(axiosInstance);
-    if (!formData || !formData.key) {
-      console.log(RED + '❌ Gagal mendapatkan form registrasi' + RESET);
-      return false;
-    }
-
-    console.log(CYAN + '🔐 Form Key: ' + formData.key.substring(0, 20) + '...' + RESET);
-    console.log(CYAN + '🎯 Captcha: ' + formData.captcha + RESET);
-
-    // Small delay before submitting
-    await delay(2000);
-
-    // 5. Register account
-    const registerSuccess = await registerAccount(
-      emailData.address,
-      password,
-      formData.captcha,
-      formData.key,
-      axiosInstance,
-      formData.cookies
+    const { data: { text } } = await Tesseract.recognize(
+      imagePath,
+      'eng',
+      {
+        logger: m => {} // Silent
+      }
     );
 
-    if (!registerSuccess) {
-      console.log(RED + '❌ Registrasi gagal' + RESET);
-      return false;
+    // Extract only digits
+    const captchaText = text.replace(/[^0-9]/g, '');
+
+    if (captchaText.length >= 4) {
+      console.log(GREEN + '✅ Captcha terdeteksi: ' + captchaText + RESET);
+      return captchaText;
     }
 
-    // 6. Try to login
-    await delay(3000);
-    const loginSuccess = await loginAccount(emailData.address, password, axiosInstance);
+    console.log(YELLOW + '⚠️  Captcha tidak jelas, retry...' + RESET);
+    return null;
 
-    // 7. Save account
-    saveAccount(emailData.address, password, loginSuccess ? 'success' : 'registered');
+  } catch (error) {
+    console.log(RED + '❌ OCR Error: ' + error.message + RESET);
+    return null;
+  }
+}
 
-    console.log('\n' + GREEN + '═'.repeat(60) + RESET);
-    console.log(BOLD + GREEN + '✅ PROSES SELESAI!' + RESET);
-    console.log(GREEN + '📧 Email: ' + emailData.address + RESET);
+// ========================================
+// PUPPETEER AUTOMATION
+// ========================================
+
+async function createAccount(proxy = null, accountNumber = 1) {
+  let browser = null;
+
+  try {
+    console.log('\n' + CYAN + '═'.repeat(70) + RESET);
+    console.log(BOLD + `🚀 Memulai pembuatan akun #${accountNumber}...` + RESET);
+    console.log(CYAN + '═'.repeat(70) + RESET + '\n');
+
+    // Browser launch options
+    const launchOptions = {
+      headless: true, // Set false untuk lihat browser
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
+        '--window-size=1920,1080',
+        '--user-agent=' + new UserAgent().toString()
+      ]
+    };
+
+    // Add proxy if provided
+    if (proxy) {
+      // Parse proxy format: http://user:pass@host:port
+      launchOptions.args.push('--proxy-server=' + proxy);
+      console.log(YELLOW + '🔒 Proxy: ' + proxy.split('@')[1] || proxy + RESET);
+    }
+
+    // Launch browser
+    console.log(CYAN + '🌐 Launching browser...' + RESET);
+    browser = await puppeteer.launch(launchOptions);
+    const page = await browser.newPage();
+
+    // Set viewport
+    await page.setViewport({ width: 1920, height: 1080 });
+
+    // Handle proxy authentication
+    if (proxy && proxy.includes('@')) {
+      const proxyParts = proxy.match(/:\/\/(.*):(.*)@/);
+      if (proxyParts) {
+        await page.authenticate({
+          username: proxyParts[1],
+          password: proxyParts[2]
+        });
+      }
+    }
+
+    // 1. Get temporary email
+    const emailData = await getTempEmail();
+    if (!emailData) {
+      throw new Error('Failed to get email');
+    }
+
+    const username = emailData.address.split('@')[0];
+    const password = generateRandomPassword();
+
     console.log(GREEN + '🔑 Password: ' + password + RESET);
-    console.log(GREEN + '🔗 Login: ' + BASE_URL + RESET);
-    console.log(GREEN + '═'.repeat(60) + RESET + '\n');
 
-    return true;
+    // 2. Navigate to registration page
+    console.log(CYAN + '📄 Opening registration page...' + RESET);
+    await page.goto(REG_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    await randomDelay(1000, 2000);
+
+    // Take screenshot for debugging
+    await page.screenshot({ path: 'registration_page.png' });
+    console.log(CYAN + '📸 Screenshot saved: registration_page.png' + RESET);
+
+    // 3. Wait for form elements
+    await page.waitForSelector('input[name="name"]', { timeout: 10000 });
+
+    // 4. Get captcha image
+    console.log(CYAN + '🎯 Capturing captcha...' + RESET);
+
+    // Find captcha image element
+    const captchaImageExists = await page.$('img[src*="image.php"]');
+    let captchaText = '';
+
+    if (captchaImageExists) {
+      // Screenshot captcha area
+      const captchaElement = await page.$('img[src*="image.php"]');
+      await captchaElement.screenshot({ path: 'captcha.png' });
+      console.log(CYAN + '📸 Captcha image saved: captcha.png' + RESET);
+
+      // Solve with OCR
+      captchaText = await solveCaptcha('captcha.png');
+
+      if (!captchaText) {
+        throw new Error('Failed to solve captcha');
+      }
+    } else {
+      // Fallback: check if captcha is in text form
+      const captchaDisplayed = await page.evaluate(() => {
+        const numberInput = document.querySelector('input[name="number"]');
+        if (numberInput) {
+          const parent = numberInput.parentElement;
+          const text = parent.textContent;
+          const match = text.match(/\d{4,}/);
+          return match ? match[0] : null;
+        }
+        return null;
+      });
+
+      captchaText = captchaDisplayed;
+      console.log(CYAN + '🎯 Captcha from page: ' + captchaText + RESET);
+    }
+
+    if (!captchaText) {
+      throw new Error('Captcha not found');
+    }
+
+    // 5. Fill form with human-like typing
+    console.log(CYAN + '✍️  Filling form...' + RESET);
+
+    // Login field
+    await page.click('input[name="name"]');
+    await randomDelay(300, 600);
+    await page.type('input[name="name"]', username, { delay: 100 });
+    await randomDelay(300, 600);
+
+    // Email field
+    await page.click('input[name="email"]');
+    await randomDelay(300, 600);
+    await page.type('input[name="email"]', emailData.address, { delay: 100 });
+    await randomDelay(300, 600);
+
+    // Password field
+    await page.click('input[name="pass"]');
+    await randomDelay(300, 600);
+    await page.type('input[name="pass"]', password, { delay: 100 });
+    await randomDelay(300, 600);
+
+    // Confirm password (if exists)
+    const pass2Exists = await page.$('input[name="pass2"]');
+    if (pass2Exists) {
+      await page.click('input[name="pass2"]');
+      await randomDelay(300, 600);
+      await page.type('input[name="pass2"]', password, { delay: 100 });
+      await randomDelay(300, 600);
+    }
+
+    // Captcha field
+    await page.click('input[name="number"]');
+    await randomDelay(300, 600);
+    await page.type('input[name="number"]', captchaText, { delay: 150 });
+    await randomDelay(500, 1000);
+
+    // Screenshot before submit
+    await page.screenshot({ path: 'before_submit.png' });
+
+    // 6. Submit form
+    console.log(CYAN + '📤 Submitting registration...' + RESET);
+
+    const submitButton = await page.$('button[name="sub_reg"], input[type="submit"]');
+    if (submitButton) {
+      await submitButton.click();
+    } else {
+      await page.evaluate(() => {
+        document.querySelector('form').submit();
+      });
+    }
+
+    // Wait for response
+    await randomDelay(3000, 5000);
+
+    // Screenshot after submit
+    await page.screenshot({ path: 'after_submit.png' });
+
+    // 7. Check success
+    const currentUrl = page.url();
+    const pageContent = await page.content();
+
+    const isSuccess = 
+      pageContent.toLowerCase().includes('success') ||
+      pageContent.toLowerCase().includes('registered') ||
+      pageContent.toLowerCase().includes('welcome') ||
+      pageContent.toLowerCase().includes('dashboard') ||
+      currentUrl.includes('dashboard') ||
+      currentUrl !== REG_URL;
+
+    if (isSuccess) {
+      console.log(GREEN + BOLD + '\n✅ REGISTRASI BERHASIL!' + RESET);
+      console.log(GREEN + '📧 Email: ' + emailData.address + RESET);
+      console.log(GREEN + '🔑 Password: ' + password + RESET);
+      console.log(GREEN + '🔗 Login: ' + BASE_URL + RESET);
+
+      saveAccount(emailData.address, password, 'success');
+
+      await browser.close();
+      return true;
+    } else {
+      console.log(RED + '❌ Registrasi gagal' + RESET);
+      await browser.close();
+      return false;
+    }
 
   } catch (error) {
     console.log(RED + '\n❌ Error: ' + error.message + RESET);
+
+    // Screenshot on error
+    if (browser) {
+      try {
+        const pages = await browser.pages();
+        if (pages.length > 0) {
+          await pages[0].screenshot({ path: 'error_screenshot.png' });
+          console.log(YELLOW + '📸 Error screenshot: error_screenshot.png' + RESET);
+        }
+      } catch (e) {}
+
+      await browser.close();
+    }
+
     return false;
   }
 }
 
 // ========================================
-// INTERACTIVE MENU
+// MAIN MENU
 // ========================================
 
 async function main() {
@@ -644,18 +406,9 @@ async function main() {
   try {
     const answers = await inquirer.prompt([
       {
-        type: 'list',
-        name: 'emailProvider',
-        message: 'Pilih provider email:',
-        choices: [
-          { name: 'Mail.tm (Recommended)', value: 'mail.tm' },
-          { name: 'Guerrilla Mail', value: 'guerrillamail' }
-        ]
-      },
-      {
         type: 'confirm',
         name: 'useProxy',
-        message: 'Gunakan proxy?',
+        message: 'Gunakan proxy rotating?',
         default: false
       },
       {
@@ -665,7 +418,7 @@ async function main() {
         default: '1',
         validate: input => {
           const num = parseInt(input);
-          return num > 0 && num <= 100 ? true : 'Masukkan angka 1-100';
+          return num > 0 && num <= 100 ? true : 'Masukkan 1-100';
         }
       },
       {
@@ -677,39 +430,42 @@ async function main() {
           const num = parseInt(input);
           return num >= 0 ? true : 'Masukkan angka positif';
         }
+      },
+      {
+        type: 'confirm',
+        name: 'headless',
+        message: 'Jalankan headless (tanpa tampilan browser)?',
+        default: true
       }
     ]);
 
-    // Load proxies if needed
+    // Load proxies
     let proxies = [];
     if (answers.useProxy) {
       proxies = readProxiesFromFile('proxy.txt');
       if (proxies.length === 0) {
-        console.log(RED + '❌ File proxy.txt kosong atau tidak ditemukan' + RESET);
-        console.log(YELLOW + 'Buat file proxy.txt dengan format:\nhttp://ip:port\nhttp://username:password@ip:port' + RESET);
+        console.log(RED + '❌ proxy.txt kosong!' + RESET);
         return;
       }
-      console.log(GREEN + '✅ Loaded ' + proxies.length + ' proxies' + RESET);
+      console.log(GREEN + `✅ Loaded ${proxies.length} proxies` + RESET);
     }
 
     const accountCount = parseInt(answers.accountCount);
-    const delaySeconds = parseInt(answers.delay) * 1000;
-
-    console.log('\n' + BLUE + BOLD + '╔═══════════════════════════════════════╗' + RESET);
-    console.log(BLUE + BOLD + '║     MEMULAI PROSES PEMBUATAN AKUN     ║' + RESET);
-    console.log(BLUE + BOLD + '╚═══════════════════════════════════════╝' + RESET + '\n');
+    const delayMs = parseInt(answers.delay) * 1000;
 
     let successCount = 0;
     let failedCount = 0;
 
-    for (let i = 0; i < accountCount; i++) {
-      console.log(YELLOW + `\n📌 Akun ${i + 1}/${accountCount}` + RESET);
+    console.log('\n' + BLUE + '═'.repeat(70) + RESET);
+    console.log(BOLD + '🚀 MEMULAI AUTOMATION' + RESET);
+    console.log(BLUE + '═'.repeat(70) + RESET);
 
+    for (let i = 0; i < accountCount; i++) {
       const proxy = answers.useProxy && proxies.length > 0 
-        ? proxies[i % proxies.length] 
+        ? proxies[i % proxies.length]
         : null;
 
-      const success = await createAccount(proxy, answers.emailProvider);
+      const success = await createAccount(proxy, i + 1);
 
       if (success) {
         successCount++;
@@ -717,29 +473,25 @@ async function main() {
         failedCount++;
       }
 
-      // Delay before next account
+      // Delay before next
       if (i < accountCount - 1) {
-        await countdown(delaySeconds, 'Delay sebelum akun berikutnya');
+        console.log(YELLOW + `\n⏳ Delay ${answers.delay} detik...` + RESET);
+        await delay(delayMs);
       }
     }
 
     // Summary
-    console.log('\n' + BLUE + '═'.repeat(60) + RESET);
+    console.log('\n' + BLUE + '═'.repeat(70) + RESET);
     console.log(BOLD + '📊 RINGKASAN' + RESET);
-    console.log(BLUE + '═'.repeat(60) + RESET);
+    console.log(BLUE + '═'.repeat(70) + RESET);
     console.log(GREEN + '✅ Berhasil: ' + successCount + RESET);
     console.log(RED + '❌ Gagal: ' + failedCount + RESET);
-    console.log(CYAN + '📁 Akun disimpan di: accounts.txt' + RESET);
-    console.log(BLUE + '═'.repeat(60) + RESET + '\n');
+    console.log(CYAN + '📁 Saved: accounts.txt' + RESET);
+    console.log(BLUE + '═'.repeat(70) + RESET);
 
   } catch (error) {
-    if (error.isTtyError) {
-      console.log(RED + 'Prompt tidak dapat dirender di environment ini' + RESET);
-    } else {
-      console.log(RED + 'Error: ' + error.message + RESET);
-    }
+    console.log(RED + 'Error: ' + error.message + RESET);
   }
 }
 
-// Run the bot
 main().catch(console.error);
