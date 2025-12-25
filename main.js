@@ -9,6 +9,7 @@ const CONFIG = {
   proxyFile: 'proxy.txt',
   accountsToCreate: 10,
   delayBetweenRegistrations: 8000,
+  cloudflareTimeout: 60000, // Timeout untuk bypass Cloudflare
 };
 
 // Membaca proxy dari file
@@ -64,6 +65,48 @@ function getNextProxy() {
   currentProxyIndex = (currentProxyIndex + 1) % proxyList.length;
   
   return proxy;
+}
+
+// Wait for Cloudflare bypass
+async function waitForCloudflareBypass(page, timeout = 60000) {
+  console.log('🛡️  Menunggu Cloudflare bypass...');
+  
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < timeout) {
+    try {
+      // Check jika Cloudflare challenge sudah selesai
+      const isCloudflare = await page.evaluate(() => {
+        const bodyText = document.body.innerText.toLowerCase();
+        const title = document.title.toLowerCase();
+        
+        // Cek indikator Cloudflare
+        return bodyText.includes('verifying you are human') || 
+               bodyText.includes('checking your browser') ||
+               bodyText.includes('cloudflare') ||
+               title.includes('just a moment');
+      });
+      
+      if (!isCloudflare) {
+        console.log('✅ Cloudflare bypass berhasil!');
+        return true;
+      }
+      
+      // Tunggu sebentar sebelum cek lagi
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      if (elapsed % 5 === 0) {
+        console.log(`   ⏳ Menunggu bypass... (${elapsed}s)`);
+      }
+      
+    } catch (error) {
+      // Ignore error, lanjut cek
+    }
+  }
+  
+  console.log('⚠️  Timeout menunggu Cloudflare bypass');
+  return false;
 }
 
 // Extract captcha number dari HTML
@@ -126,9 +169,9 @@ async function registerAccount(accountData, proxyUrl) {
     console.log(`🚀 Memulai registrasi akun: ${accountData.username}`);
     console.log('='.repeat(60));
 
-    // Setup real browser dengan konfigurasi yang diperbaiki
+    // Setup real browser
     const connectOptions = {
-      headless: 'auto', // Ubah ke 'auto' untuk kompatibilitas lebih baik
+      headless: 'auto',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -139,18 +182,16 @@ async function registerAccount(accountData, proxyUrl) {
         '--disable-blink-features=AutomationControlled',
         '--window-size=1920,1080',
       ],
-      turnstile: true,
+      turnstile: true, // Enable Cloudflare bypass
       connectOption: {
         defaultViewport: {
           width: 1920,
           height: 1080
         },
       },
-      disableXvfb: false, // Ubah ke false
+      disableXvfb: false,
       ignoreAllFlags: false,
       customConfig: {},
-      // Tambahkan executablePath jika Chrome tidak terdeteksi
-      // executablePath: '/usr/bin/google-chrome', // Uncomment jika perlu
     };
 
     // Add proxy jika ada
@@ -163,7 +204,6 @@ async function registerAccount(accountData, proxyUrl) {
 
     console.log('🌐 Menginisialisasi real browser...');
     
-    // Tambahkan timeout dan error handling yang lebih baik
     let response;
     try {
       response = await Promise.race([
@@ -175,7 +215,6 @@ async function registerAccount(accountData, proxyUrl) {
     } catch (error) {
       console.error('❌ Error saat connect browser:', error.message);
       
-      // Coba lagi tanpa proxy jika error terkait proxy
       if (proxyUrl && error.message.includes('ECONNREFUSED')) {
         console.log('⚠️  Mencoba lagi tanpa proxy...');
         connectOptions.args = connectOptions.args.filter(arg => !arg.includes('--proxy-server'));
@@ -190,13 +229,12 @@ async function registerAccount(accountData, proxyUrl) {
 
     console.log('✅ Real browser berhasil diinisialisasi');
 
-    // Set extra headers untuk bypass detection
+    // Set extra headers
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     });
 
-    // Set user agent
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
     // Buka halaman referral dulu
@@ -210,8 +248,15 @@ async function registerAccount(accountData, proxyUrl) {
       console.log('⚠️  Timeout saat load referral page, melanjutkan...');
     }
     
-    console.log('⏳ Menunggu halaman load...');
+    // Tunggu Cloudflare bypass
+    await waitForCloudflareBypass(page, CONFIG.cloudflareTimeout);
+    
+    console.log('⏳ Menunggu halaman stabil...');
     await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Screenshot setelah bypass
+    await page.screenshot({ path: 'after_cloudflare_bypass.png', fullPage: true });
+    console.log('📸 Screenshot after bypass: after_cloudflare_bypass.png');
 
     // Navigate ke halaman registrasi
     console.log('📄 Membuka halaman registrasi...');
@@ -224,17 +269,39 @@ async function registerAccount(accountData, proxyUrl) {
       console.log('⚠️  Timeout saat load registration page, melanjutkan...');
     }
     
+    // Tunggu Cloudflare bypass lagi (jika ada di halaman register)
+    await waitForCloudflareBypass(page, CONFIG.cloudflareTimeout);
+    
     console.log('⏳ Menunggu form registrasi load...');
     await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // Check apakah form ada
-    const formDetected = await page.evaluate(() => {
+    // Check apakah form ada dengan lebih detail
+    const formInfo = await page.evaluate(() => {
       const inputs = document.querySelectorAll('input');
-      return inputs.length > 0;
+      const buttons = document.querySelectorAll('button');
+      const forms = document.querySelectorAll('form');
+      
+      return {
+        inputCount: inputs.length,
+        buttonCount: buttons.length,
+        formCount: forms.length,
+        bodyText: document.body.innerText.substring(0, 500),
+        title: document.title,
+      };
     });
 
-    if (!formDetected) {
-      throw new Error('Form registrasi tidak ditemukan');
+    console.log('📊 Info halaman:');
+    console.log(`   Input: ${formInfo.inputCount}`);
+    console.log(`   Button: ${formInfo.buttonCount}`);
+    console.log(`   Form: ${formInfo.formCount}`);
+    console.log(`   Title: ${formInfo.title}`);
+
+    if (formInfo.inputCount === 0) {
+      // Screenshot untuk debug
+      await page.screenshot({ path: 'no_form_found.png', fullPage: true });
+      console.log('📸 Screenshot: no_form_found.png');
+      
+      throw new Error(`Form registrasi tidak ditemukan. Input: ${formInfo.inputCount}, Body preview: ${formInfo.bodyText.substring(0, 100)}`);
     }
 
     console.log('✅ Form registrasi ditemukan!');
@@ -251,7 +318,7 @@ async function registerAccount(accountData, proxyUrl) {
     
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    // Isi dengan evaluate untuk lebih reliable
+    // Isi dengan evaluate
     const fillSuccess = await page.evaluate((data, captcha) => {
       try {
         // Login/Username
