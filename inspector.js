@@ -10,13 +10,16 @@ async function inspectRegistrationPage() {
   console.log('='.repeat(60));
   
   const browser = await puppeteer.launch({
-    headless: false, // Set false agar bisa lihat prosesnya
+    headless: 'new', // Gunakan headless mode untuk server
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-blink-features=AutomationControlled',
       '--disable-features=IsolateOrigins,site-per-process',
       '--disable-web-security',
+      '--disable-dev-shm-usage', // Penting untuk server
+      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
       '--window-size=1920,1080'
     ],
     ignoreHTTPSErrors: true,
@@ -352,11 +355,11 @@ async function inspectRegistrationPage() {
     console.log('  - registration_page.png (Screenshot)');
     console.log('  - form_info.json (Form data)');
     console.log('  - form_filled.png (Filled form screenshot)');
-    console.log('\n💡 Browser tetap terbuka untuk inspeksi manual.');
-    console.log('   Tekan Ctrl+C untuk menutup.');
+    console.log('\n⏳ Menunggu 5 detik sebelum menutup browser...');
+    await page.waitForTimeout(5000);
     
-    // Jangan close browser agar bisa inspeksi manual
-    // await browser.close();
+    await browser.close();
+    console.log('✅ Browser ditutup.');
     
   } catch (error) {
     console.error('❌ Error:', error.message);
