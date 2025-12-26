@@ -39,11 +39,13 @@ if (choice === "3") {
 
 // ================= LAUNCH OPTIONS =================
 const launchOptions = {
-  headless: false,
-  defaultViewport: null,
+  headless: true, // ← FIX UTAMA UNTUK VPS
+  defaultViewport: { width: 1366, height: 768 },
   args: [
     "--no-sandbox",
-    "--disable-setuid-sandbox"
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu"
   ]
 };
 
@@ -53,6 +55,7 @@ if (proxy) {
 
 // ================= MAIN =================
 (async () => {
+  console.log("🚀 Launching browser...");
   const browser = await puppeteer.launch(launchOptions);
   const page = await browser.newPage();
 
@@ -64,7 +67,8 @@ if (proxy) {
   }
 
   await page.goto("https://gamety.org/?pages=reg", {
-    waitUntil: "networkidle2"
+    waitUntil: "networkidle2",
+    timeout: 60000
   });
 
   console.log("🌐 Halaman register terbuka");
@@ -72,9 +76,9 @@ if (proxy) {
   // ================= FORM =================
   const uid = Date.now();
 
-  await page.type('input[name="login"]', `user${uid}`);
-  await page.type('input[name="email"]', `user${uid}@gmail.com`);
-  await page.type('input[name="pass"]', "Password123!");
+  await page.type('input[name="login"]', `user${uid}`, { delay: 50 });
+  await page.type('input[name="email"]', `user${uid}@gmail.com`, { delay: 50 });
+  await page.type('input[name="pass"]', "Password123!", { delay: 50 });
 
   console.log("✍️ Form utama diisi");
 
@@ -104,12 +108,12 @@ if (proxy) {
     return;
   }
 
-  await page.type('input[name="cap"]', captcha);
+  await page.type('input[name="cap"]', captcha, { delay: 50 });
 
   // ================= SUBMIT =================
   await Promise.all([
     page.click('button[name="sub_reg"]'),
-    page.waitForNavigation({ waitUntil: "networkidle2" })
+    page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 })
   ]);
 
   console.log("📨 Form disubmit");
