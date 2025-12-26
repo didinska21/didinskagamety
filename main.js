@@ -27,35 +27,47 @@ if (choice === "3") {
     .split("\n")
     .map(p => p.trim())
     .filter(Boolean);
+
+  if (list.length === 0) {
+    console.log("❌ proxies.txt kosong");
+    process.exit(1);
+  }
+
   proxy = list[Math.floor(Math.random() * list.length)];
   console.log("🔁 Proxy dipilih:", proxy);
 }
 
-// ================= BROWSER =================
+// ================= LAUNCH OPTIONS =================
 const launchOptions = {
   headless: false,
   defaultViewport: null,
-  args: []
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox"
+  ]
 };
 
 if (proxy) {
   launchOptions.args.push(`--proxy-server=${proxy}`);
 }
 
+// ================= MAIN =================
 (async () => {
   const browser = await puppeteer.launch(launchOptions);
   const page = await browser.newPage();
 
-  // auth proxy jika perlu
+  // ===== PROXY AUTH =====
   if (proxy && proxy.includes("@")) {
-    const auth = proxy.split("@")[0].replace(/https?:\/\//, "");
-    const [username, password] = auth.split(":");
+    const authPart = proxy.split("@")[0].replace(/^https?:\/\//, "");
+    const [username, password] = authPart.split(":");
     await page.authenticate({ username, password });
   }
 
   await page.goto("https://gamety.org/?pages=reg", {
     waitUntil: "networkidle2"
   });
+
+  console.log("🌐 Halaman register terbuka");
 
   // ================= FORM =================
   const uid = Date.now();
@@ -64,11 +76,18 @@ if (proxy) {
   await page.type('input[name="email"]', `user${uid}@gmail.com`);
   await page.type('input[name="pass"]', "Password123!");
 
+  console.log("✍️ Form utama diisi");
+
   // ================= CAPTCHA =================
   const capImg = await page.$("#cap_img");
-  await capImg.screenshot({ path: "captcha.png" });
+  if (!capImg) {
+    console.log("❌ Captcha image tidak ditemukan");
+    await browser.close();
+    return;
+  }
 
-  console.log("🧩 Captcha diambil");
+  await capImg.screenshot({ path: "captcha.png" });
+  console.log("🧩 captcha.png disimpan");
 
   const {
     data: { text }
@@ -80,7 +99,7 @@ if (proxy) {
   console.log("🔍 OCR Result:", captcha);
 
   if (captcha.length !== 4) {
-    console.log("❌ OCR gagal, hentikan");
+    console.log("❌ OCR captcha tidak valid, stop");
     await browser.close();
     return;
   }
@@ -95,15 +114,17 @@ if (proxy) {
 
   console.log("📨 Form disubmit");
 
-  // ================= RESULT CHECK =================
+  // ================= RESULT =================
   const bodyText = await page.evaluate(() => document.body.innerText);
 
-  if (bodyText.includes("successful")) {
+  if (/success|successful/i.test(bodyText)) {
     console.log("✅ REGISTER SUCCESS");
-  } else if (bodyText.includes("captcha")) {
+  } else if (/captcha/i.test(bodyText)) {
     console.log("❌ CAPTCHA SALAH");
+  } else if (/disabled/i.test(bodyText)) {
+    console.log("🚫 REGISTRATION DISABLED");
   } else {
-    console.log("⚠️ RESPONSE TIDAK DIKETAHUI");
+    console.log("⚠️ RESPONSE TIDAK DIKENALI");
   }
 
   await browser.close();
