@@ -39,7 +39,7 @@ if (choice === "3") {
 
 // ================= LAUNCH OPTIONS =================
 const launchOptions = {
-  headless: true, // ← FIX UTAMA UNTUK VPS
+  headless: true, // WAJIB di VPS
   defaultViewport: { width: 1366, height: 768 },
   args: [
     "--no-sandbox",
@@ -67,18 +67,36 @@ if (proxy) {
   }
 
   await page.goto("https://gamety.org/?pages=reg", {
-    waitUntil: "networkidle2",
+    waitUntil: "domcontentloaded",
     timeout: 60000
   });
 
-  console.log("🌐 Halaman register terbuka");
+  console.log("🌐 Halaman dibuka");
+  console.log("🔗 URL aktif:", page.url());
 
-  // ================= FORM =================
+  // ================= WAIT FORM =================
+  console.log("⏳ Menunggu form register...");
+  try {
+    await page.waitForSelector('input[name="login"]', {
+      visible: true,
+      timeout: 60000
+    });
+  } catch {
+    console.log("❌ Form tidak ditemukan, simpan debug.html");
+    const html = await page.content();
+    fs.writeFileSync("debug.html", html);
+    await browser.close();
+    return;
+  }
+
+  console.log("✅ Form register ditemukan");
+
+  // ================= FORM FILL =================
   const uid = Date.now();
 
-  await page.type('input[name="login"]', `user${uid}`, { delay: 50 });
-  await page.type('input[name="email"]', `user${uid}@gmail.com`, { delay: 50 });
-  await page.type('input[name="pass"]', "Password123!", { delay: 50 });
+  await page.type('input[name="login"]', `user${uid}`, { delay: 80 });
+  await page.type('input[name="email"]', `user${uid}@gmail.com`, { delay: 80 });
+  await page.type('input[name="pass"]', "Password123!", { delay: 80 });
 
   console.log("✍️ Form utama diisi");
 
@@ -108,15 +126,17 @@ if (proxy) {
     return;
   }
 
-  await page.type('input[name="cap"]', captcha, { delay: 50 });
+  await page.type('input[name="cap"]', captcha, { delay: 80 });
 
   // ================= SUBMIT =================
+  console.log("📨 Submit form...");
   await Promise.all([
     page.click('button[name="sub_reg"]'),
-    page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 })
+    page.waitForNavigation({
+      waitUntil: "networkidle2",
+      timeout: 60000
+    })
   ]);
-
-  console.log("📨 Form disubmit");
 
   // ================= RESULT =================
   const bodyText = await page.evaluate(() => document.body.innerText);
