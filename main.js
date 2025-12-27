@@ -74,12 +74,37 @@ async function recognizeCaptcha() {
   return null;
 }
 
+/* ================= PARSE PROXY ================= */
+function parseProxy(proxy) {
+  // Remove protocol
+  const clean = proxy.replace(/^https?:\/\//, "").replace(/^socks5:\/\//, "");
+  
+  if (clean.includes("@")) {
+    // Format: user:pass@host:port
+    const [authPart, hostPart] = clean.split("@");
+    const [username, password] = authPart.split(":");
+    return { username, password, host: hostPart };
+  } else {
+    // Format: host:port (no auth)
+    return { username: null, password: null, host: clean };
+  }
+}
+
 /* ================= REGISTER FUNCTION ================= */
 async function registerAccount(accountNum, proxy = null) {
   console.log(`\n${"=".repeat(50)}`);
   console.log(`🎯 AKUN #${accountNum}/${totalAccounts}`);
-  if (proxy) console.log(`🔁 Proxy: ${proxy.substring(0, 30)}...`);
+  if (proxy) console.log(`🔁 Proxy: ${proxy.substring(0, 40)}...`);
   console.log("=".repeat(50));
+
+  let proxyConfig = null;
+  if (proxy) {
+    proxyConfig = parseProxy(proxy);
+    console.log(`📡 Host: ${proxyConfig.host}`);
+    if (proxyConfig.username) {
+      console.log(`🔐 User: ${proxyConfig.username.substring(0, 20)}...`);
+    }
+  }
 
   const launchOptions = {
     headless: true,
@@ -88,39 +113,52 @@ async function registerAccount(accountNum, proxy = null) {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
-      "--disable-gpu"
-    ]
+      "--disable-gpu",
+      "--disable-web-security",
+      "--disable-features=IsolateOrigins,site-per-process",
+      "--disable-blink-features=AutomationControlled"
+    ],
+    ignoreHTTPSErrors: true
   };
 
-  if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
+  // Set proxy server (host:port only, NO auth in args)
+  if (proxyConfig) {
+    launchOptions.args.push(`--proxy-server=http://${proxyConfig.host}`);
+  }
 
   let browser;
   try {
     browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
 
-    // Proxy auth (support both http://user:pass@host:port and user:pass@host:port)
-    if (proxy && proxy.includes("@")) {
-      try {
-        const withoutProtocol = proxy.replace(/^https?:\/\//, "");
-        const [authPart, hostPart] = withoutProtocol.split("@");
-        const [username, password] = authPart.split(":");
-        
-        if (username && password) {
-          await page.authenticate({ username, password });
-          console.log(`🔐 Auth: ${username.substring(0, 10)}...`);
-        }
-      } catch (err) {
-        console.log("⚠️ Proxy auth parse error:", err.message);
-      }
+    // Set proxy authentication via page.authenticate()
+    if (proxyConfig && proxyConfig.username && proxyConfig.password) {
+      await page.authenticate({
+        username: proxyConfig.username,
+        password: proxyConfig.password
+      });
+      console.log("✅ Proxy authenticated");
     }
 
+    // Set realistic headers
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    });
+
+    // Set user agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    console.log("🌐 Loading page...");
     await page.goto("https://gamety.org/?pages=reg", {
       waitUntil: "domcontentloaded",
       timeout: 60000
     });
 
+    console.log("✅ Page loaded");
+
     // Wait for form
+    console.log("⏳ Waiting for form...");
     await page.waitForSelector("#form", { visible: true, timeout: 60000 });
     await page.waitForFunction(() => {
       const f = document.querySelector("#form");
@@ -129,6 +167,8 @@ async function registerAccount(accountNum, proxy = null) {
              f.querySelector('input[name="pass"]') && 
              f.querySelector('input[name="cap"]');
     }, { timeout: 60000 });
+
+    console.log("✅ Form ready");
 
     // Fill form
     const uid = Date.now() + Math.floor(Math.random() * 1000);
@@ -139,6 +179,7 @@ async function registerAccount(accountNum, proxy = null) {
     await page.type('#form input[name="login"]', username, { delay: 50 });
     await page.type('#form input[name="email"]', email, { delay: 50 });
     await page.type('#form input[name="pass"]', password, { delay: 50 });
+    console.log(`✍️ Filled: ${username}`);
 
     // Captcha
     const capImg = await page.$("#cap_img");
@@ -161,6 +202,7 @@ async function registerAccount(accountNum, proxy = null) {
     await page.type('#form input[name="cap"]', captcha, { delay: 50 });
 
     // Submit
+    console.log("📨 Submitting...");
     await Promise.all([
       page.click('#form button[name="sub_reg"]'),
       page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 })
@@ -185,13 +227,14 @@ async function registerAccount(accountNum, proxy = null) {
         password 
       };
     } else if (/already.*registration.*ip|ip.*already/i.test(bodyText)) {
-      console.log("🚫 IP BLOCKED - Need proxy");
+      console.log("🚫 IP BLOCKED");
       return { success: false, reason: "ip_blocked" };
     } else if (/captcha|wrong code/i.test(bodyText)) {
-      console.log("❌ CAPTCHA SALAH - Retry...");
+      console.log("❌ CAPTCHA SALAH");
       return { success: false, reason: "wrong_captcha" };
     } else {
       console.log("⚠️ UNKNOWN RESPONSE");
+      console.log("📄 Preview:", bodyText.substring(0, 200));
       return { success: false, reason: "unknown" };
     }
 
@@ -234,7 +277,7 @@ async function registerAccount(accountNum, proxy = null) {
         if (retry.success) {
           results.success++;
           results.accounts.push(retry);
-          results.failed--; // Cancel previous fail count
+          results.failed--;
         }
       }
     }
