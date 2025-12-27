@@ -1,5 +1,6 @@
 import puppeteer from "puppeteer";
 import Tesseract from "tesseract.js";
+import sharp from "sharp";
 import fs from "fs";
 import readline from "readline-sync";
 
@@ -36,9 +37,19 @@ if (choice === "3") {
   console.log("🔁 Proxy dipilih:", proxy);
 }
 
+/* ================= PREPROCESS CAPTCHA ================= */
+async function preprocessCaptcha() {
+  // bikin angka lebih kontras & bersih untuk OCR
+  await sharp("captcha.png")
+    .grayscale()
+    .resize(320, 120, { fit: "inside" })
+    .threshold(150)
+    .toFile("captcha_clean.png");
+}
+
 /* ================= BROWSER ================= */
 const launchOptions = {
-  headless: true,
+  headless: true, // WAJIB di VPS
   defaultViewport: { width: 1366, height: 768 },
   args: [
     "--no-sandbox",
@@ -56,7 +67,7 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
   const browser = await puppeteer.launch(launchOptions);
   const page = await browser.newPage();
 
-  // proxy auth
+  // Proxy auth (jika ada)
   if (proxy && proxy.includes("@")) {
     const auth = proxy.split("@")[0].replace(/^https?:\/\//, "");
     const [username, password] = auth.split(":");
@@ -70,7 +81,7 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
 
   console.log("🌐 Page opened:", page.url());
 
-  /* ================= WAIT FORM (ANTI ROCKET LOADER) ================= */
+  /* ===== WAIT FORM (ANTI ROCKET LOADER) ===== */
   console.log("⏳ Menunggu container #form...");
   await page.waitForSelector("#form", { visible: true, timeout: 60000 });
 
@@ -88,16 +99,14 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
 
   console.log("✅ Form siap sepenuhnya");
 
-  /* ================= FILL FORM ================= */
+  /* ===== FILL FORM ===== */
   const uid = Date.now();
-
   await page.type('#form input[name="login"]', `user${uid}`, { delay: 80 });
   await page.type('#form input[name="email"]', `user${uid}@gmail.com`, { delay: 80 });
   await page.type('#form input[name="pass"]', "Password123!", { delay: 80 });
-
   console.log("✍️ Data user diisi");
 
-  /* ================= CAPTCHA ================= */
+  /* ===== CAPTCHA ===== */
   const capImg = await page.$("#cap_img");
   if (!capImg) {
     console.log("❌ CAPTCHA image tidak ditemukan");
@@ -108,11 +117,19 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
   await capImg.screenshot({ path: "captcha.png" });
   console.log("🧩 captcha.png disimpan");
 
-  const {
-    data: { text }
-  } = await Tesseract.recognize("captcha.png", "eng", {
-    tessedit_char_whitelist: "0123456789"
-  });
+  // preprocess image
+  await preprocessCaptcha();
+  console.log("🧼 captcha_clean.png dibuat");
+
+  // OCR dengan setting fokus satu baris
+  const { data: { text } } = await Tesseract.recognize(
+    "captcha_clean.png",
+    "eng",
+    {
+      tessedit_char_whitelist: "0123456789",
+      psm: 7
+    }
+  );
 
   const captcha = text.replace(/\D/g, "").trim();
   console.log("🔍 OCR Result:", captcha);
@@ -125,7 +142,7 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
 
   await page.type('#form input[name="cap"]', captcha, { delay: 80 });
 
-  /* ================= SUBMIT ================= */
+  /* ===== SUBMIT ===== */
   console.log("📨 Submit form...");
   await Promise.all([
     page.click('#form button[name="sub_reg"]'),
@@ -135,7 +152,7 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
     })
   ]);
 
-  /* ================= RESULT ================= */
+  /* ===== RESULT ===== */
   const bodyText = await page.evaluate(() => document.body.innerText);
 
   if (/success|successful/i.test(bodyText)) {
