@@ -209,7 +209,27 @@ async function registerAccount(accountNum, proxy = null) {
     const bodyText = await page.evaluate(() => document.body.innerText);
     const pageUrl = page.url();
     
+    // Check for modal/alert messages
+    const modalText = await page.evaluate(() => {
+      const modals = document.querySelectorAll('.modal, .popup, .alert, .message, .error, .success, [role="dialog"]');
+      return Array.from(modals).map(m => m.innerText).join("\n");
+    });
+    
+    // Check for any red/error text
+    const errorElements = await page.evaluate(() => {
+      const errors = document.querySelectorAll('.error, .danger, .red, [style*="color: red"], [style*="color:red"]');
+      return Array.from(errors).map(e => e.innerText).filter(Boolean).join("\n");
+    });
+    
     console.log(`📍 Current URL: ${pageUrl}`);
+    
+    if (modalText) {
+      console.log(`💬 Modal/Alert: ${modalText}`);
+    }
+    
+    if (errorElements) {
+      console.log(`⚠️  Error elements: ${errorElements}`);
+    }
     
     // Save debug info
     const debugData = {
@@ -219,14 +239,18 @@ async function registerAccount(accountNum, proxy = null) {
       proxy: proxy || "NO_PROXY",
       captcha,
       url: pageUrl,
-      response: bodyText
+      response: bodyText,
+      modalText: modalText || "NO_MODAL",
+      errorElements: errorElements || "NO_ERRORS"
     };
     fs.appendFileSync("debug_log.json", JSON.stringify(debugData, null, 2) + ",\n");
     
     await browser.close();
 
-    // Parse response
-    if (/success|successful|berhasil|congratulations|welcome/i.test(bodyText)) {
+    // Parse response - check combined text
+    const combinedText = bodyText + "\n" + modalText + "\n" + errorElements;
+    
+    if (/success|successful|berhasil|congratulations|welcome|registered successfully/i.test(combinedText)) {
       console.log("✅ REGISTRATION SUCCESS!");
       console.log(`📝 Username: ${username}`);
       console.log(`📧 Email   : ${email}`);
@@ -238,12 +262,13 @@ async function registerAccount(accountNum, proxy = null) {
       stats.success++;
       return { success: true, username, email, password };
       
-    } else if (/captcha|wrong code|verification code.*incorrect|kode.*salah/i.test(bodyText)) {
+    } else if (/captcha|wrong code|verification code.*incorrect|kode.*salah|invalid.*code|wrong.*captcha/i.test(combinedText)) {
       console.log("❌ CAPTCHA WRONG");
+      console.log(`💡 You entered: ${captcha}`);
       stats.failed++;
       return { success: false, reason: "wrong_captcha" };
       
-    } else if (/already.*registration.*ip|ip.*already|sudah.*registrasi|There has already been registration from this IP/i.test(bodyText)) {
+    } else if (/already.*registration.*ip|ip.*already|sudah.*registrasi|There has already been registration from this IP/i.test(combinedText)) {
       console.log("🚫 IP BLOCKED - This proxy/IP already used for registration");
       console.log("💡 Marking this proxy as BURNED");
       
@@ -259,18 +284,48 @@ async function registerAccount(accountNum, proxy = null) {
       stats.ipBlocked++;
       return { success: false, reason: "ip_blocked" };
       
-    } else if (/username.*exist|email.*exist|already.*taken|sudah.*digunakan/i.test(bodyText)) {
+    } else if (/username.*exist|email.*exist|already.*taken|sudah.*digunakan|login.*already.*use/i.test(combinedText)) {
       console.log("⚠️ Username/Email already exists");
       stats.failed++;
       return { success: false, reason: "duplicate" };
       
-    } else if (/disabled|registration.*closed|ditutup/i.test(bodyText)) {
+    } else if (/disabled|registration.*closed|ditutup/i.test(combinedText)) {
       console.log("🚫 REGISTRATION DISABLED");
       stats.failed++;
       return { success: false, reason: "registration_closed" };
       
     } else {
       console.log("⚠️ UNKNOWN RESPONSE");
+      
+      // If page is still on registration form, likely captcha wrong or validation failed
+      if (pageUrl.includes("pages=reg")) {
+        console.log("💡 Still on registration page - Likely CAPTCHA WRONG or validation error");
+        console.log(`💡 Captcha entered: ${captcha}`);
+        
+        // Check if form was actually submitted by looking for error messages
+        if (combinedText.length < 500) {
+          console.log("⚠️  Very short response - form might not have submitted");
+        }
+        
+        console.log("💡 Full response logged to debug_log.json");
+        console.log("\n" + "=".repeat(60));
+        console.log("RESPONSE PREVIEW:");
+        console.log("=".repeat(60));
+        console.log(bodyText.substring(0, 500));
+        if (modalText) {
+          console.log("\nMODAL TEXT:");
+          console.log(modalText);
+        }
+        if (errorElements) {
+          console.log("\nERROR ELEMENTS:");
+          console.log(errorElements);
+        }
+        console.log("=".repeat(60));
+        
+        stats.failed++;
+        return { success: false, reason: "likely_wrong_captcha" };
+      }
+      
       console.log("💡 Full response logged to debug_log.json");
       console.log("\n" + "=".repeat(60));
       console.log("RESPONSE PREVIEW:");
@@ -322,11 +377,21 @@ async function bulkRegister() {
     
     const result = await registerAccount(i, proxy);
 
-    // Retry once if wrong captcha
-    if (!result.success && result.reason === "wrong_captcha") {
-      console.log("🔄 Retrying with different captcha...");
-      await new Promise(r => setTimeout(r, 2000));
-      await registerAccount(i, proxy);
+    // Smart retry logic for wrong captcha
+    if (!result.success) {
+      if (result.reason === "wrong_captcha" || result.reason === "likely_wrong_captcha") {
+        console.log("\n🔄 Retrying with new captcha...");
+        await new Promise(r => setTimeout(r, 2000));
+        
+        const retryResult = await registerAccount(i, proxy);
+        
+        // If still failed after retry, move on
+        if (!retryResult.success) {
+          console.log("⚠️  Failed after retry - moving to next account");
+        }
+      } else if (result.reason === "ip_blocked") {
+        console.log("⚠️  Proxy burned - will use next fresh proxy");
+      }
     }
 
     // Delay between accounts
