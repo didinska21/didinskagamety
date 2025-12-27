@@ -8,8 +8,8 @@ const TOTAL_ACCOUNT = 10;
 const TARGET_URL = "https://gamety.org/?pages=reg";
 
 // === PROXY (HTTP ROTATING – WAJIB FORMAT INI) ===
-const PROXY_HOST = "na.proxys5.net:6200";
-const PROXY_USER = "81634571-zone-custom-region-US-state-newyork";
+const PROXY_HOST = "as.proxys5.net:6200";
+const PROXY_USER = "81634571-zone-custom-region-SA";
 const PROXY_PASS = "g93c7o0n";
 
 /* ================= UTILS ================= */
