@@ -148,6 +148,13 @@ async function solveCaptcha2Captcha() {
 
       if (resultText.startsWith("OK|")) {
         const answer = resultText.split("|")[1];
+        
+        // Validate answer
+        if (!answer || answer === "none" || answer.length !== 4 || !/^\d{4}$/.test(answer)) {
+          console.log(`\n❌ 2Captcha invalid answer: "${answer}"`);
+          return null;
+        }
+        
         console.log(`✅ 2Captcha solved: ${answer}`);
         return answer;
       } else if (resultText === "CAPCHA_NOT_READY") {
@@ -303,12 +310,17 @@ async function registerAccount(accountNum, proxy = null) {
       }
     } else if (CAPTCHA_METHOD === "2") {
       captcha = await solveCaptcha2Captcha();
+      if (!captcha) {
+        console.log("\n⚠️  2Captcha failed - Captcha might be too difficult");
+        console.log("💡 Captcha ini mungkin terlalu sulit untuk 2Captcha");
+        console.log("💡 Recommendation: Use Manual method (option 3)");
+      }
     } else if (CAPTCHA_METHOD === "3") {
       captcha = await solveCaptchaManual();
     }
 
-    if (!captcha || captcha.length !== 4) {
-      console.log("❌ Failed to solve captcha");
+    if (!captcha || captcha.length !== 4 || !/^\d{4}$/.test(captcha)) {
+      console.log("❌ Failed to solve captcha or invalid format");
       await browser.close();
       return { success: false, reason: "captcha_unsolved" };
     }
@@ -318,20 +330,30 @@ async function registerAccount(accountNum, proxy = null) {
 
     // Submit form
     console.log("📨 Submitting registration...");
-    await Promise.all([
-      page.click('#form button[name="sub_reg"]'),
-      page.waitForNavigation({ 
-        waitUntil: "networkidle2", 
-        timeout: 60000 
-      })
-    ]);
+    
+    try {
+      await Promise.all([
+        page.click('#form button[name="sub_reg"]'),
+        page.waitForNavigation({ 
+          waitUntil: "networkidle2", 
+          timeout: 60000 
+        })
+      ]);
+    } catch (navError) {
+      console.log("⚠️  Navigation timeout - checking response anyway...");
+      // Continue to check response even if navigation times out
+    }
 
     // Check result
     const bodyText = await page.evaluate(() => document.body.innerText);
+    const pageUrl = page.url();
+    
+    console.log(`📍 Current URL: ${pageUrl}`);
+    
     await browser.close();
 
     // Parse response
-    if (/success|successful|berhasil|congratulations/i.test(bodyText)) {
+    if (/success|successful|berhasil|congratulations|welcome/i.test(bodyText)) {
       console.log("✅ REGISTRATION SUCCESS!");
       console.log(`📝 Username: ${username}`);
       console.log(`📧 Email   : ${email}`);
@@ -344,24 +366,46 @@ async function registerAccount(accountNum, proxy = null) {
       stats.success++;
       return { success: true, username, email, password };
       
-    } else if (/captcha|wrong code|verification code.*incorrect/i.test(bodyText)) {
+    } else if (/captcha|wrong code|verification code.*incorrect|kode.*salah/i.test(bodyText)) {
       console.log("❌ CAPTCHA WRONG");
       stats.failed++;
       return { success: false, reason: "wrong_captcha" };
       
-    } else if (/already.*registration.*ip|ip.*already/i.test(bodyText)) {
+    } else if (/already.*registration.*ip|ip.*already|sudah.*registrasi/i.test(bodyText)) {
       console.log("🚫 IP BLOCKED - Use different proxy");
       stats.failed++;
       return { success: false, reason: "ip_blocked" };
       
-    } else if (/username.*exist|email.*exist|already.*taken/i.test(bodyText)) {
-      console.log("⚠️ Username/Email already exists (rare)");
+    } else if (/username.*exist|email.*exist|already.*taken|sudah.*digunakan/i.test(bodyText)) {
+      console.log("⚠️ Username/Email already exists");
       stats.failed++;
       return { success: false, reason: "duplicate" };
       
+    } else if (/disabled|registration.*closed|ditutup/i.test(bodyText)) {
+      console.log("🚫 REGISTRATION DISABLED");
+      stats.failed++;
+      return { success: false, reason: "registration_closed" };
+      
     } else {
-      console.log("⚠️ UNKNOWN RESPONSE");
-      console.log("📄 Preview:", bodyText.substring(0, 250));
+      console.log("⚠️ UNKNOWN RESPONSE - Analyzing...");
+      console.log("\n" + "=".repeat(60));
+      console.log("FULL RESPONSE:");
+      console.log("=".repeat(60));
+      console.log(bodyText);
+      console.log("=".repeat(60));
+      
+      // Try to find any success indicators
+      if (pageUrl !== "https://gamety.org/?pages=reg" && !pageUrl.includes("pages=reg")) {
+        console.log("\n💡 URL changed - Might be success (redirected)");
+        console.log("   Saving account just in case...");
+        
+        const data = `${username}:${email}:${password} # VERIFY_MANUALLY\n`;
+        fs.appendFileSync("accounts.txt", data);
+        
+        stats.success++;
+        return { success: true, username, email, password, needsVerification: true };
+      }
+      
       stats.failed++;
       return { success: false, reason: "unknown" };
     }
@@ -389,11 +433,24 @@ async function bulkRegister() {
     
     const result = await registerAccount(i, proxy);
 
-    // Retry once if captcha wrong (only for OCR/API methods)
-    if (!result.success && result.reason === "wrong_captcha" && CAPTCHA_METHOD !== "3") {
-      console.log("🔄 Retrying once...");
-      await new Promise(r => setTimeout(r, 2000));
-      await registerAccount(i, proxy);
+    // Smart retry logic
+    if (!result.success) {
+      if (result.reason === "captcha_unsolved" && CAPTCHA_METHOD === "2") {
+        console.log("\n" + "=".repeat(60));
+        console.log("⚠️  2CAPTCHA FAILED!");
+        console.log("=".repeat(60));
+        console.log("Captcha ini terlalu sulit untuk 2Captcha.");
+        console.log("Bot akan KEMBALI KE MENU setelah batch selesai.");
+        console.log("Gunakan method OCR (1) atau Manual (3) untuk retry.");
+        console.log("=".repeat(60) + "\n");
+      }
+      
+      // Retry once if wrong captcha (except for manual mode)
+      if (result.reason === "wrong_captcha" && CAPTCHA_METHOD !== "3") {
+        console.log("🔄 Retrying once...");
+        await new Promise(r => setTimeout(r, 2000));
+        await registerAccount(i, proxy);
+      }
     }
 
     // Delay between accounts
