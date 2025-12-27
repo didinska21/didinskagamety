@@ -1,17 +1,11 @@
 import puppeteer from "puppeteer";
-import Tesseract from "tesseract.js";
-import sharp from "sharp";
 import fs from "fs";
 import readline from "readline-sync";
-import dotenv from "dotenv";
-
-dotenv.config();
 
 /* ================= GLOBAL CONFIG ================= */
 let proxyList = [];
 let totalAccounts = 0;
-let CAPTCHA_METHOD = null;
-let stats = { success: 0, failed: 0, ocrFailed: 0, apiKeyError: 0 };
+let stats = { success: 0, failed: 0 };
 
 /* ================= MAIN MENU ================= */
 function showMenu() {
@@ -24,154 +18,20 @@ ${"=".repeat(60)}
 📊 STATISTICS (Session)
    ✅ Success    : ${stats.success}
    ❌ Failed     : ${stats.failed}
-   🔍 OCR Failed : ${stats.ocrFailed}
-   🔑 API Error  : ${stats.apiKeyError}
 
 ${"=".repeat(60)}
            CAPTCHA SOLVING METHOD
 ${"=".repeat(60)}
 
-1. 🤖 OCR (Free, ~70% accuracy)
-2. 🔑 2Captcha API (Paid, ~99% accuracy, need API key in .env)
-3. 👁️  Manual Input (100% accuracy, you type captcha)
+1. 👁️  Manual Input (100% accuracy - You type captcha)
 
 0. ❌ Exit
 
 ${"=".repeat(60)}
   `);
 
-  const choice = readline.question("Pilih method (0-3): ");
+  const choice = readline.question("Pilih method (0-1): ");
   return choice;
-}
-
-/* ================= OCR METHOD ================= */
-async function solveCaptchaOCR() {
-  console.log("🔍 Solving with OCR...");
-  
-  const strategies = [
-    { resize: 600, blur: 0.3, threshold: 180, name: "Thin Preserve" },
-    { resize: 700, blur: 0.5, threshold: 170, name: "Light Enhance" },
-    { resize: 800, blur: 0.4, threshold: 175, name: "Balanced" },
-    { resize: 500, blur: 0.2, threshold: 185, name: "Minimal Process" }
-  ];
-
-  for (const strategy of strategies) {
-    try {
-      await sharp("captcha.png")
-        .resize(strategy.resize, Math.floor(strategy.resize * 0.375), { 
-          fit: "inside",
-          kernel: "lanczos3" 
-        })
-        .extend({ 
-          top: 10, 
-          bottom: 10, 
-          left: 10, 
-          right: 10, 
-          background: { r: 255, g: 255, b: 255, alpha: 1 } 
-        })
-        .normalize()
-        .blur(strategy.blur)
-        .grayscale()
-        .threshold(strategy.threshold)
-        .toFile("captcha_temp.png");
-
-      for (const psm of [7, 8, 13, 6]) {
-        const { data: { text, confidence } } = await Tesseract.recognize(
-          "captcha_temp.png",
-          "eng",
-          {
-            tessedit_char_whitelist: "0123456789",
-            psm: psm
-          }
-        );
-
-        const result = text.replace(/\D/g, "").trim();
-        
-        if (result.length === 4) {
-          console.log(`✅ OCR Success: "${result}" [${strategy.name}, PSM${psm}, ${confidence.toFixed(0)}%]`);
-          try { fs.unlinkSync("captcha_temp.png"); } catch (e) {}
-          return result;
-        }
-      }
-    } catch (err) {
-      // Continue to next strategy
-    }
-  }
-
-  try { fs.unlinkSync("captcha_temp.png"); } catch (e) {}
-  console.log("❌ OCR failed to read captcha");
-  return null;
-}
-
-/* ================= 2CAPTCHA API METHOD ================= */
-async function solveCaptcha2Captcha() {
-  const apiKey = process.env.CAPTCHA_API_KEY;
-  
-  if (!apiKey) {
-    console.log("❌ CAPTCHA_API_KEY tidak ditemukan di .env");
-    console.log("💡 Buat file .env dengan isi:");
-    console.log("   CAPTCHA_API_KEY=your_api_key_here");
-    stats.apiKeyError++;
-    return null;
-  }
-
-  console.log("🤖 Solving with 2Captcha API...");
-
-  try {
-    const imageBuffer = fs.readFileSync("captcha.png");
-    const base64Image = imageBuffer.toString("base64");
-
-    // Submit captcha
-    const submitUrl = `http://2captcha.com/in.php?key=${apiKey}&method=base64&body=${base64Image}&numeric=1&min_len=4&max_len=4`;
-    const submitRes = await fetch(submitUrl);
-    const submitText = await submitRes.text();
-
-    if (!submitText.startsWith("OK|")) {
-      console.log("❌ 2Captcha submit error:", submitText);
-      if (submitText.includes("ERROR_WRONG_USER_KEY")) {
-        console.log("💡 API Key salah! Cek file .env");
-        stats.apiKeyError++;
-      }
-      return null;
-    }
-
-    const captchaId = submitText.split("|")[1];
-    console.log(`⏳ Captcha ID: ${captchaId}, waiting...`);
-
-    // Poll for result (max 60s)
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 2000));
-
-      const resultUrl = `http://2captcha.com/res.php?key=${apiKey}&action=get&id=${captchaId}`;
-      const resultRes = await fetch(resultUrl);
-      const resultText = await resultRes.text();
-
-      if (resultText.startsWith("OK|")) {
-        const answer = resultText.split("|")[1];
-        
-        // Validate answer
-        if (!answer || answer === "none" || answer.length !== 4 || !/^\d{4}$/.test(answer)) {
-          console.log(`\n❌ 2Captcha invalid answer: "${answer}"`);
-          return null;
-        }
-        
-        console.log(`✅ 2Captcha solved: ${answer}`);
-        return answer;
-      } else if (resultText === "CAPCHA_NOT_READY") {
-        process.stdout.write(".");
-      } else {
-        console.log("\n❌ 2Captcha error:", resultText);
-        return null;
-      }
-    }
-
-    console.log("\n⏱️ 2Captcha timeout");
-    return null;
-
-  } catch (err) {
-    console.log("❌ 2Captcha error:", err.message);
-    return null;
-  }
 }
 
 /* ================= MANUAL METHOD ================= */
@@ -300,24 +160,8 @@ async function registerAccount(accountNum, proxy = null) {
     await capImg.screenshot({ path: "captcha.png", type: "png" });
     console.log("📸 Captcha saved");
 
-    // Solve captcha based on method
-    let captcha = null;
-
-    if (CAPTCHA_METHOD === "1") {
-      captcha = await solveCaptchaOCR();
-      if (!captcha) {
-        stats.ocrFailed++;
-      }
-    } else if (CAPTCHA_METHOD === "2") {
-      captcha = await solveCaptcha2Captcha();
-      if (!captcha) {
-        console.log("\n⚠️  2Captcha failed - Captcha might be too difficult");
-        console.log("💡 Captcha ini mungkin terlalu sulit untuk 2Captcha");
-        console.log("💡 Recommendation: Use Manual method (option 3)");
-      }
-    } else if (CAPTCHA_METHOD === "3") {
-      captcha = await solveCaptchaManual();
-    }
+    // Solve captcha manually
+    const captcha = await solveCaptchaManual();
 
     if (!captcha || captcha.length !== 4 || !/^\d{4}$/.test(captcha)) {
       console.log("❌ Failed to solve captcha or invalid format");
@@ -341,7 +185,6 @@ async function registerAccount(accountNum, proxy = null) {
       ]);
     } catch (navError) {
       console.log("⚠️  Navigation timeout - checking response anyway...");
-      // Continue to check response even if navigation times out
     }
 
     // Check result
@@ -349,6 +192,18 @@ async function registerAccount(accountNum, proxy = null) {
     const pageUrl = page.url();
     
     console.log(`📍 Current URL: ${pageUrl}`);
+    
+    // Save debug info
+    const debugData = {
+      timestamp: new Date().toISOString(),
+      username,
+      email,
+      proxy: proxy || "NO_PROXY",
+      captcha,
+      url: pageUrl,
+      response: bodyText
+    };
+    fs.appendFileSync("debug_log.json", JSON.stringify(debugData, null, 2) + ",\n");
     
     await browser.close();
 
@@ -359,7 +214,6 @@ async function registerAccount(accountNum, proxy = null) {
       console.log(`📧 Email   : ${email}`);
       console.log(`🔑 Password: ${password}`);
       
-      // Save to file
       const data = `${username}:${email}:${password}\n`;
       fs.appendFileSync("accounts.txt", data);
       
@@ -372,7 +226,8 @@ async function registerAccount(accountNum, proxy = null) {
       return { success: false, reason: "wrong_captcha" };
       
     } else if (/already.*registration.*ip|ip.*already|sudah.*registrasi/i.test(bodyText)) {
-      console.log("🚫 IP BLOCKED - Use different proxy");
+      console.log("🚫 IP BLOCKED - This proxy is burned");
+      console.log("💡 Response logged to debug_log.json");
       stats.failed++;
       return { success: false, reason: "ip_blocked" };
       
@@ -387,17 +242,17 @@ async function registerAccount(accountNum, proxy = null) {
       return { success: false, reason: "registration_closed" };
       
     } else {
-      console.log("⚠️ UNKNOWN RESPONSE - Analyzing...");
+      console.log("⚠️ UNKNOWN RESPONSE");
+      console.log("💡 Full response logged to debug_log.json");
       console.log("\n" + "=".repeat(60));
-      console.log("FULL RESPONSE:");
+      console.log("RESPONSE PREVIEW:");
       console.log("=".repeat(60));
-      console.log(bodyText);
+      console.log(bodyText.substring(0, 500));
       console.log("=".repeat(60));
       
-      // Try to find any success indicators
       if (pageUrl !== "https://gamety.org/?pages=reg" && !pageUrl.includes("pages=reg")) {
         console.log("\n💡 URL changed - Might be success (redirected)");
-        console.log("   Saving account just in case...");
+        console.log("   Saving account for manual verification...");
         
         const data = `${username}:${email}:${password} # VERIFY_MANUALLY\n`;
         fs.appendFileSync("accounts.txt", data);
@@ -421,9 +276,9 @@ async function registerAccount(accountNum, proxy = null) {
 /* ================= BULK REGISTER ================= */
 async function bulkRegister() {
   console.log("\n" + "=".repeat(60));
-  console.log("🚀 STARTING BULK REGISTRATION");
+  console.log("🚀 STARTING REGISTRATION");
   console.log("=".repeat(60));
-  console.log(`📊 Method: ${CAPTCHA_METHOD === "1" ? "OCR" : CAPTCHA_METHOD === "2" ? "2Captcha API" : "Manual"}`);
+  console.log(`📊 Method: Manual Captcha Input`);
   console.log(`🎯 Target: ${totalAccounts} accounts`);
   console.log(`🔁 Proxies: ${proxyList.length > 0 ? proxyList.length : "None"}`);
   console.log("=".repeat(60) + "\n");
@@ -433,24 +288,11 @@ async function bulkRegister() {
     
     const result = await registerAccount(i, proxy);
 
-    // Smart retry logic
-    if (!result.success) {
-      if (result.reason === "captcha_unsolved" && CAPTCHA_METHOD === "2") {
-        console.log("\n" + "=".repeat(60));
-        console.log("⚠️  2CAPTCHA FAILED!");
-        console.log("=".repeat(60));
-        console.log("Captcha ini terlalu sulit untuk 2Captcha.");
-        console.log("Bot akan KEMBALI KE MENU setelah batch selesai.");
-        console.log("Gunakan method OCR (1) atau Manual (3) untuk retry.");
-        console.log("=".repeat(60) + "\n");
-      }
-      
-      // Retry once if wrong captcha (except for manual mode)
-      if (result.reason === "wrong_captcha" && CAPTCHA_METHOD !== "3") {
-        console.log("🔄 Retrying once...");
-        await new Promise(r => setTimeout(r, 2000));
-        await registerAccount(i, proxy);
-      }
+    // Retry once if wrong captcha
+    if (!result.success && result.reason === "wrong_captcha") {
+      console.log("🔄 Retrying with different captcha...");
+      await new Promise(r => setTimeout(r, 2000));
+      await registerAccount(i, proxy);
     }
 
     // Delay between accounts
@@ -467,13 +309,8 @@ async function bulkRegister() {
   console.log("=".repeat(60));
   console.log(`✅ Success : ${stats.success}`);
   console.log(`❌ Failed  : ${stats.failed}`);
-  if (CAPTCHA_METHOD === "1") {
-    console.log(`🔍 OCR Failed: ${stats.ocrFailed}`);
-  }
-  if (stats.apiKeyError > 0) {
-    console.log(`🔑 API Error: ${stats.apiKeyError}`);
-  }
-  console.log(`📁 Saved to: accounts.txt`);
+  console.log(`📁 Accounts saved to: accounts.txt`);
+  console.log(`🔍 Debug log saved to: debug_log.json`);
   console.log("=".repeat(60) + "\n");
 
   readline.question("Press ENTER to continue...");
@@ -492,8 +329,10 @@ async function setup() {
   console.log("\n📋 Proxy Configuration:");
   if (proxyList.length > 0) {
     console.log(`   ✅ ${proxyList.length} proxy loaded from proxies.txt`);
+    console.log(`   💡 Bot will rotate through proxies for each account`);
   } else {
-    console.log(`   ⚠️  No proxy (registration from your IP)`);
+    console.log(`   ⚠️  No proxy detected (will use your IP)`);
+    console.log(`   💡 Create proxies.txt to use proxy rotation`);
   }
 
   totalAccounts = parseInt(readline.question("\nBerapa akun yang mau dibuat? ")) || 1;
@@ -505,31 +344,17 @@ async function main() {
   await setup();
 
   while (true) {
-    CAPTCHA_METHOD = showMenu();
+    const choice = showMenu();
 
-    if (CAPTCHA_METHOD === "0") {
+    if (choice === "0") {
       console.log("\n👋 Goodbye!\n");
       process.exit(0);
     }
 
-    if (!["1", "2", "3"].includes(CAPTCHA_METHOD)) {
+    if (choice !== "1") {
       console.log("❌ Invalid choice");
       await new Promise(r => setTimeout(r, 2000));
       continue;
-    }
-
-    // Check API key for method 2
-    if (CAPTCHA_METHOD === "2") {
-      if (!process.env.CAPTCHA_API_KEY) {
-        console.log("\n❌ 2Captcha API Key tidak ditemukan!");
-        console.log("💡 Buat file .env dengan format:");
-        console.log("   CAPTCHA_API_KEY=your_2captcha_api_key_here");
-        console.log("");
-        readline.question("Press ENTER to continue...");
-        continue;
-      } else {
-        console.log(`\n✅ API Key found: ${process.env.CAPTCHA_API_KEY.substring(0, 10)}...`);
-      }
     }
 
     await bulkRegister();
