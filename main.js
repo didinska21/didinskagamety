@@ -99,11 +99,20 @@ async function registerAccount(accountNum, proxy = null) {
     browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
 
-    // Proxy auth
+    // Proxy auth (support both http://user:pass@host:port and user:pass@host:port)
     if (proxy && proxy.includes("@")) {
-      const auth = proxy.split("@")[0].replace(/^https?:\/\//, "");
-      const [username, password] = auth.split(":");
-      await page.authenticate({ username, password });
+      try {
+        const withoutProtocol = proxy.replace(/^https?:\/\//, "");
+        const [authPart, hostPart] = withoutProtocol.split("@");
+        const [username, password] = authPart.split(":");
+        
+        if (username && password) {
+          await page.authenticate({ username, password });
+          console.log(`🔐 Auth: ${username.substring(0, 10)}...`);
+        }
+      } catch (err) {
+        console.log("⚠️ Proxy auth parse error:", err.message);
+      }
     }
 
     await page.goto("https://gamety.org/?pages=reg", {
