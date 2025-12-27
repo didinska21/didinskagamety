@@ -4,7 +4,7 @@ import fs from "fs";
 
 console.log(`
 ============================================================
-         DEBUG REGISTRATION RESPONSE
+         DEEP DEBUG REGISTRATION ANALYSIS
 ============================================================
 `);
 
@@ -26,9 +26,16 @@ function parseProxy(proxy) {
   const proxyConfig = proxy ? parseProxy(proxy) : null;
 
   const launchOptions = {
-    headless: false, // Show browser for debugging
+    headless: true, // Must be true on server without GUI
     defaultViewport: { width: 1366, height: 768 },
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-web-security",
+      "--disable-features=IsolateOrigins,site-per-process"
+    ]
   };
 
   if (proxyConfig) {
@@ -45,17 +52,68 @@ function parseProxy(proxy) {
     });
   }
 
+  // Monitor all network requests
+  const networkLog = [];
+  page.on('request', request => {
+    networkLog.push({
+      type: 'request',
+      method: request.method(),
+      url: request.url(),
+      headers: request.headers(),
+      postData: request.postData()
+    });
+  });
+
+  page.on('response', async response => {
+    networkLog.push({
+      type: 'response',
+      status: response.status(),
+      url: response.url(),
+      headers: response.headers()
+    });
+  });
+
+  // Monitor console logs
+  page.on('console', msg => {
+    console.log('🖥️  Browser Console:', msg.text());
+  });
+
   // Go to registration page
+  console.log("🌐 Loading registration page...");
   await page.goto("https://gamety.org/?pages=reg", {
-    waitUntil: "domcontentloaded",
+    waitUntil: "networkidle2",
     timeout: 60000
   });
 
   await page.waitForSelector("#form", { visible: true, timeout: 60000 });
-  await page.waitForFunction(() => {
-    const f = document.querySelector("#form");
-    return f && f.querySelector('input[name="login"]');
-  }, { timeout: 60000 });
+  console.log("✅ Form loaded");
+
+  // Analyze form structure
+  const formInfo = await page.evaluate(() => {
+    const form = document.querySelector("#form");
+    const button = form.querySelector('button[name="sub_reg"]');
+    
+    return {
+      formAction: form.action || "NO_ACTION",
+      formMethod: form.method || "NO_METHOD",
+      formId: form.id,
+      formOnSubmit: form.onsubmit ? form.onsubmit.toString() : "NO_ONSUBMIT",
+      buttonType: button.type,
+      buttonName: button.name,
+      buttonOnClick: button.onclick ? button.onclick.toString() : "NO_ONCLICK",
+      allInputs: Array.from(form.querySelectorAll('input')).map(inp => ({
+        name: inp.name,
+        type: inp.type,
+        required: inp.required
+      }))
+    };
+  });
+
+  console.log("\n" + "=".repeat(60));
+  console.log("📋 FORM STRUCTURE ANALYSIS:");
+  console.log("=".repeat(60));
+  console.log(JSON.stringify(formInfo, null, 2));
+  console.log("=".repeat(60));
 
   // Fill form
   const uid = Date.now();
@@ -67,7 +125,7 @@ function parseProxy(proxy) {
   await page.type('#form input[name="email"]', email, { delay: 50 });
   await page.type('#form input[name="pass"]', password, { delay: 50 });
 
-  console.log(`✍️  Filled: ${username}`);
+  console.log(`\n✍️  Filled: ${username}`);
 
   // Captcha
   const capImg = await page.$("#cap_img");
@@ -78,74 +136,116 @@ function parseProxy(proxy) {
   await page.type('#form input[name="cap"]', captcha, { delay: 50 });
 
   console.log("\n📨 Submitting...");
+  console.log("🔍 Watching network traffic...");
 
-  // Submit and wait
+  // Clear network log before submit
+  networkLog.length = 0;
+
+  // Check if there's any JavaScript validation (getEventListeners not available in headless)
+  console.log("🔍 Checking for validation scripts...");
+
+  // Submit using different methods to see which works
+  console.log("\n🧪 TEST 1: Click button");
   await page.click('#form button[name="sub_reg"]');
   
-  // Wait a bit for response
-  await new Promise(r => setTimeout(r, 3000));
+  // Wait and observe
+  await new Promise(r => setTimeout(r, 5000));
 
-  // Get all info
-  const url = page.url();
-  const title = await page.title();
-  const bodyText = await page.evaluate(() => document.body.innerText);
-  const bodyHTML = await page.evaluate(() => document.body.innerHTML);
+  // Check if anything changed
+  const afterClick = {
+    url: page.url(),
+    hasAlert: await page.evaluate(() => {
+      const alerts = document.querySelectorAll('.alert, .error, .success, .message');
+      return Array.from(alerts).map(a => a.innerText);
+    }),
+    bodyText: await page.evaluate(() => document.body.innerText)
+  };
 
   console.log("\n" + "=".repeat(60));
-  console.log("DEBUG INFO");
+  console.log("📊 AFTER SUBMIT:");
   console.log("=".repeat(60));
-  console.log(`URL   : ${url}`);
-  console.log(`Title : ${title}`);
+  console.log("URL:", afterClick.url);
+  console.log("Alerts:", afterClick.hasAlert);
   console.log("\n" + "=".repeat(60));
-  console.log("BODY TEXT:");
+  console.log("NETWORK LOG:");
   console.log("=".repeat(60));
-  console.log(bodyText);
+  
+  // Filter important requests (POST/form submissions)
+  const importantRequests = networkLog.filter(log => 
+    log.type === 'request' && 
+    (log.method === 'POST' || log.url.includes('reg') || log.postData)
+  );
+
+  if (importantRequests.length > 0) {
+    console.log("📤 POST Requests found:");
+    importantRequests.forEach(req => {
+      console.log(`   URL: ${req.url}`);
+      console.log(`   Method: ${req.method}`);
+      console.log(`   Data: ${req.postData || 'EMPTY'}`);
+    });
+  } else {
+    console.log("⚠️  NO POST REQUEST DETECTED!");
+    console.log("   This means the form is NOT submitting!");
+  }
+
+  // Get all network responses
+  const responses = networkLog.filter(log => log.type === 'response');
+  console.log(`\n📥 Total responses: ${responses.length}`);
+  
+  if (responses.length > 0) {
+    console.log("\nKey responses:");
+    responses.slice(0, 5).forEach(res => {
+      console.log(`   ${res.status} - ${res.url.substring(0, 80)}`);
+    });
+  }
+
   console.log("\n" + "=".repeat(60));
 
-  // Save HTML for inspection
-  fs.writeFileSync("debug_response.html", bodyHTML);
-  console.log("💾 HTML saved to debug_response.html");
+  // Save full logs
+  fs.writeFileSync("network_log.json", JSON.stringify(networkLog, null, 2));
+  console.log("💾 Full network log saved to network_log.json");
 
-  // Check for modal/popup
-  const modalText = await page.evaluate(() => {
-    const modals = document.querySelectorAll('.modal, .popup, .alert, .message, [role="dialog"]');
-    return Array.from(modals).map(m => m.innerText).join("\n");
+  fs.writeFileSync("debug_response_full.txt", afterClick.bodyText);
+  console.log("💾 Full response saved to debug_response_full.txt");
+
+  // Try alternative submission methods
+  console.log("\n" + "=".repeat(60));
+  console.log("🧪 TESTING ALTERNATIVE SUBMISSION METHODS:");
+  console.log("=".repeat(60));
+
+  // Reload page for clean test
+  await page.goto("https://gamety.org/?pages=reg", { waitUntil: "networkidle2" });
+  await page.waitForSelector("#form");
+  
+  // Fill again
+  await page.type('#form input[name="login"]', username + "2", { delay: 50 });
+  await page.type('#form input[name="email"]', username + "2@gmail.com", { delay: 50 });
+  await page.type('#form input[name="pass"]', password, { delay: 50 });
+  await page.type('#form input[name="cap"]', captcha, { delay: 50 });
+
+  networkLog.length = 0;
+
+  console.log("\n🧪 TEST 2: Form.submit()");
+  await page.evaluate(() => {
+    document.querySelector('#form').submit();
   });
 
-  if (modalText) {
-    console.log("\n" + "=".repeat(60));
-    console.log("MODAL/POPUP CONTENT:");
-    console.log("=".repeat(60));
-    console.log(modalText);
-    console.log("=".repeat(60));
-  }
+  await new Promise(r => setTimeout(r, 5000));
 
-  // Analysis
-  console.log("\n" + "=".repeat(60));
-  console.log("ANALYSIS:");
-  console.log("=".repeat(60));
+  const test2Requests = networkLog.filter(log => log.type === 'request' && log.method === 'POST');
+  console.log(`Result: ${test2Requests.length > 0 ? '✅ POST detected' : '❌ No POST'}`);
 
-  if (/success|berhasil|congratulations|welcome/i.test(bodyText)) {
-    console.log("✅ SUCCESS detected!");
-  } else if (/captcha|wrong|incorrect|salah/i.test(bodyText)) {
-    console.log("❌ CAPTCHA WRONG detected");
-  } else if (/ip.*already|sudah.*registrasi/i.test(bodyText)) {
-    console.log("🚫 IP BLOCK detected");
-  } else if (/disabled|closed|ditutup/i.test(bodyText)) {
-    console.log("🚫 REGISTRATION CLOSED detected");
-  } else {
-    console.log("⚠️  No clear success/error pattern found");
-    console.log("💡 Check debug_response.html for full HTML");
-  }
-
-  console.log("\n📝 Test account:");
-  console.log(`   Username: ${username}`);
-  console.log(`   Email   : ${email}`);
-  console.log(`   Password: ${password}`);
-
-  console.log("\n⏸️  Browser will stay open for 30 seconds...");
-  console.log("   Inspect the page manually!");
+  console.log("\n⏳ Waiting 10 seconds for final analysis...");
+  console.log("   (Server mode - no GUI available)");
   
-  await new Promise(r => setTimeout(r, 30000));
+  await new Promise(r => setTimeout(r, 10000));
   await browser.close();
+
+  console.log("\n" + "=".repeat(60));
+  console.log("🔍 DIAGNOSIS:");
+  console.log("=".repeat(60));
+  console.log("1. Check network_log.json for actual requests");
+  console.log("2. Check debug_response_full.txt for page content");
+  console.log("3. Look for JavaScript errors in browser console");
+  console.log("=".repeat(60));
 })();
