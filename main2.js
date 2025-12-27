@@ -3,7 +3,7 @@ import fs from "fs";
 import readline from "readline-sync";
 
 /* ================= CONFIG ================= */
-const TOTAL_ACCOUNT = 10; // ← ganti sesuai kebutuhan
+const TOTAL_ACCOUNT = 1; // jumlah akun
 const TARGET_URL = "https://gamety.org/?pages=reg";
 
 /* ================= MENU ================= */
@@ -12,36 +12,20 @@ console.log(`
  AUTO REGISTER BOT (MANUAL CAPTCHA)
 ==============================
 1. Tanpa Proxy
-2. Proxy Statis
-3. Proxy Rotating
+2. Proxy Statis (HTTP only)
 ==============================
 `);
 
-const choice = readline.question("Pilih mode (1/2/3): ");
+const choice = readline.question("Pilih mode (1/2): ");
 let proxy = null;
 
 if (choice === "2") {
-  proxy = readline.question("Masukkan proxy (http://user:pass@ip:port): ");
-}
-
-if (choice === "3") {
-  const list = fs.readFileSync("proxies.txt", "utf8")
-    .split("\n")
-    .map(x => x.trim())
-    .filter(Boolean);
-
-  if (!list.length) {
-    console.log("❌ proxies.txt kosong");
-    process.exit(1);
-  }
-
-  proxy = list[Math.floor(Math.random() * list.length)];
-  console.log("🔁 Proxy dipilih:", proxy);
+  proxy = readline.question("Masukkan proxy HTTP (http://user:pass@ip:port): ");
 }
 
 /* ================= BROWSER ================= */
 const launchOptions = {
-  headless: true, // VPS safe
+  headless: true,
   defaultViewport: { width: 1366, height: 768 },
   args: [
     "--no-sandbox",
@@ -51,7 +35,9 @@ const launchOptions = {
   ]
 };
 
-if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
+if (proxy) {
+  launchOptions.args.push(`--proxy-server=${proxy}`);
+}
 
 /* ================= MAIN ================= */
 (async () => {
@@ -59,17 +45,18 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
   const browser = await puppeteer.launch(launchOptions);
   const page = await browser.newPage();
 
-  // proxy auth
+  // HTTP proxy auth (jika ada)
   if (proxy && proxy.includes("@")) {
-    const auth = proxy.split("@")[0].replace(/^https?:\/\//, "");
-    const [username, password] = auth.split(":");
+    const authPart = proxy.split("@")[0].replace(/^http:\/\//, "");
+    const [username, password] = authPart.split(":");
     await page.authenticate({ username, password });
   }
 
   for (let i = 1; i <= TOTAL_ACCOUNT; i++) {
-    console.log(`\n==============================`);
-    console.log(`👤 MEMBUAT AKUN KE-${i}`);
-    console.log(`==============================`);
+    console.log(`
+==============================
+👤 MEMBUAT AKUN KE-${i}
+==============================`);
 
     await page.goto(TARGET_URL, {
       waitUntil: "domcontentloaded",
@@ -91,9 +78,7 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
 
     console.log("✅ Form siap");
 
-    /* ===== FILL USER DATA ===== */
-    const uid = Date.now() + i;
-
+    /* ===== CLEAR FORM ===== */
     await page.evaluate(() => {
       document.querySelector('#form input[name="login"]').value = "";
       document.querySelector('#form input[name="email"]').value = "";
@@ -101,9 +86,15 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
       document.querySelector('#form input[name="cap"]').value = "";
     });
 
-    await page.type('#form input[name="login"]', `user${uid}`, { delay: 60 });
-    await page.type('#form input[name="email"]', `user${uid}@gmail.com`, { delay: 60 });
-    await page.type('#form input[name="pass"]', "Password123!", { delay: 60 });
+    /* ===== FILL USER DATA ===== */
+    const uid = Date.now() + i;
+    const username = `user${uid}`;
+    const email = `user${uid}@gmail.com`;
+    const password = "Password123!";
+
+    await page.type('#form input[name="login"]', username, { delay: 60 });
+    await page.type('#form input[name="email"]', email, { delay: 60 });
+    await page.type('#form input[name="pass"]', password, { delay: 60 });
 
     /* ===== CAPTCHA SAVE ===== */
     const capImg = await page.$("#cap_img");
@@ -115,38 +106,47 @@ if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
     const captchaPath = `captcha/captcha${i}.png`;
     await capImg.screenshot({ path: captchaPath });
     console.log(`🧩 CAPTCHA disimpan: ${captchaPath}`);
-
-    /* ===== MANUAL INPUT CAPTCHA ===== */
     console.log(`👉 Buka file ${captchaPath}`);
-    const captchaValue = readline.question("✍️ Masukkan captcha: ");
 
+    /* ===== MANUAL CAPTCHA INPUT ===== */
+    const captchaValue = readline.question("✍️ Masukkan captcha: ");
     await page.type('#form input[name="cap"]', captchaValue, { delay: 60 });
 
     /* ===== SUBMIT ===== */
     console.log("📨 Submit form...");
     await Promise.all([
       page.click('#form button[name="sub_reg"]'),
-      page.waitForNavigation({
-        waitUntil: "networkidle2",
-        timeout: 60000
-      })
+      page.waitForTimeout(2000) // tunggu swal muncul
     ]);
 
-    /* ===== RESULT ===== */
-    const bodyText = await page.evaluate(() => document.body.innerText);
+    /* ===== SWEETALERT RESULT ===== */
+    const swalText = await page.evaluate(() => {
+      const el = document.querySelector(".swal-text");
+      return el ? el.innerText : null;
+    });
 
-    if (/success|successful/i.test(bodyText)) {
-      console.log(`✅ AKUN KE-${i} BERHASIL`);
-    } else if (/captcha/i.test(bodyText)) {
-      console.log(`❌ CAPTCHA SALAH (akun ke-${i})`);
-    } else if (/disabled/i.test(bodyText)) {
-      console.log(`🚫 REGISTRATION DISABLED`);
-      break;
+    if (swalText) {
+      console.log(`📣 SWEETALERT: ${swalText}`);
+
+      if (/success/i.test(swalText)) {
+        console.log(`✅ AKUN KE-${i} BERHASIL`);
+        fs.appendFileSync(
+          "akun_sukses.txt",
+          `${username}|${email}|${password}\n`
+        );
+      } else if (/captcha/i.test(swalText)) {
+        console.log(`❌ CAPTCHA SALAH`);
+      } else if (/disabled|duplicate|country/i.test(swalText)) {
+        console.log(`🚫 REGISTRATION DITOLAK`);
+        break;
+      } else {
+        console.log(`⚠️ PESAN TIDAK DIKENAL`);
+      }
     } else {
-      console.log(`⚠️ RESPONSE TIDAK DIKENALI`);
+      console.log("⚠️ Tidak ada SweetAlert terdeteksi");
     }
   }
 
   await browser.close();
-  console.log("\n🎉 SELESAI SEMUA PROSES");
+  console.log("\n🎉 SEMUA PROSES SELESAI");
 })();
