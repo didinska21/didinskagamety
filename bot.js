@@ -4,8 +4,9 @@ import readline from "readline-sync";
 
 /* ================= GLOBAL CONFIG ================= */
 let proxyList = [];
+let burnedProxies = []; // Track burned proxies
 let totalAccounts = 0;
-let stats = { success: 0, failed: 0 };
+let stats = { success: 0, failed: 0, ipBlocked: 0 };
 
 /* ================= MAIN MENU ================= */
 function showMenu() {
@@ -18,6 +19,8 @@ ${"=".repeat(60)}
 📊 STATISTICS (Session)
    ✅ Success    : ${stats.success}
    ❌ Failed     : ${stats.failed}
+   🔥 IP Blocked : ${stats.ipBlocked}
+   🔁 Available Proxies: ${proxyList.length - burnedProxies.length}/${proxyList.length}
 
 ${"=".repeat(60)}
            CAPTCHA SOLVING METHOD
@@ -58,7 +61,22 @@ async function solveCaptchaManual() {
   return captcha;
 }
 
-/* ================= PARSE PROXY ================= */
+/* ================= GET FRESH PROXY ================= */
+function getFreshProxy(index) {
+  if (proxyList.length === 0) return null;
+  
+  // Filter out burned proxies
+  const freshProxies = proxyList.filter(p => !burnedProxies.includes(p));
+  
+  if (freshProxies.length === 0) {
+    console.log("\n⚠️  WARNING: All proxies are burned!");
+    console.log("   Add more proxies to proxies.txt");
+    return null;
+  }
+  
+  // Use round-robin on fresh proxies only
+  return freshProxies[index % freshProxies.length];
+}
 function parseProxy(proxy) {
   const clean = proxy.replace(/^https?:\/\//, "").replace(/^socks5:\/\//, "");
   
@@ -225,10 +243,20 @@ async function registerAccount(accountNum, proxy = null) {
       stats.failed++;
       return { success: false, reason: "wrong_captcha" };
       
-    } else if (/already.*registration.*ip|ip.*already|sudah.*registrasi/i.test(bodyText)) {
-      console.log("🚫 IP BLOCKED - This proxy is burned");
+    } else if (/already.*registration.*ip|ip.*already|sudah.*registrasi|There has already been registration from this IP/i.test(bodyText)) {
+      console.log("🚫 IP BLOCKED - This proxy/IP already used for registration");
+      console.log("💡 Marking this proxy as BURNED");
+      
+      // Mark proxy as burned
+      if (proxy && !burnedProxies.includes(proxy)) {
+        burnedProxies.push(proxy);
+        fs.appendFileSync("burned_proxies.txt", `${proxy}\n`);
+        console.log(`🔥 Burned proxy saved to burned_proxies.txt`);
+      }
+      
       console.log("💡 Response logged to debug_log.json");
       stats.failed++;
+      stats.ipBlocked++;
       return { success: false, reason: "ip_blocked" };
       
     } else if (/username.*exist|email.*exist|already.*taken|sudah.*digunakan/i.test(bodyText)) {
@@ -284,7 +312,13 @@ async function bulkRegister() {
   console.log("=".repeat(60) + "\n");
 
   for (let i = 1; i <= totalAccounts; i++) {
-    const proxy = proxyList.length > 0 ? proxyList[(i - 1) % proxyList.length] : null;
+    const proxy = getFreshProxy(i - 1);
+    
+    if (!proxy && proxyList.length > 0) {
+      console.log("\n❌ No fresh proxies available!");
+      console.log("   Add more proxies to proxies.txt and restart");
+      break;
+    }
     
     const result = await registerAccount(i, proxy);
 
@@ -309,8 +343,13 @@ async function bulkRegister() {
   console.log("=".repeat(60));
   console.log(`✅ Success : ${stats.success}`);
   console.log(`❌ Failed  : ${stats.failed}`);
+  console.log(`🔥 IP Blocked: ${stats.ipBlocked}`);
+  console.log(`🔁 Fresh Proxies Remaining: ${proxyList.length - burnedProxies.length}/${proxyList.length}`);
   console.log(`📁 Accounts saved to: accounts.txt`);
   console.log(`🔍 Debug log saved to: debug_log.json`);
+  if (burnedProxies.length > 0) {
+    console.log(`🔥 Burned proxies saved to: burned_proxies.txt`);
+  }
   console.log("=".repeat(60) + "\n");
 
   readline.question("Press ENTER to continue...");
@@ -325,17 +364,42 @@ async function setup() {
       .map(x => x.trim())
       .filter(Boolean);
   }
+  
+  // Load burned proxies from previous sessions
+  if (fs.existsSync("burned_proxies.txt")) {
+    burnedProxies = fs.readFileSync("burned_proxies.txt", "utf8")
+      .split("\n")
+      .map(x => x.trim())
+      .filter(Boolean);
+    console.log(`\n🔥 Loaded ${burnedProxies.length} burned proxies from previous sessions`);
+  }
+
+  const freshProxies = proxyList.filter(p => !burnedProxies.includes(p));
 
   console.log("\n📋 Proxy Configuration:");
   if (proxyList.length > 0) {
-    console.log(`   ✅ ${proxyList.length} proxy loaded from proxies.txt`);
-    console.log(`   💡 Bot will rotate through proxies for each account`);
+    console.log(`   ✅ Total proxies: ${proxyList.length}`);
+    console.log(`   🔥 Burned proxies: ${burnedProxies.length}`);
+    console.log(`   ✨ Fresh proxies: ${freshProxies.length}`);
+    console.log(`   💡 Bot will use fresh proxies only`);
+    
+    if (freshProxies.length === 0) {
+      console.log("\n⚠️  WARNING: No fresh proxies available!");
+      console.log("   All proxies in proxies.txt are burned.");
+      console.log("   Add new proxies or delete burned_proxies.txt to retry.");
+    }
   } else {
     console.log(`   ⚠️  No proxy detected (will use your IP)`);
     console.log(`   💡 Create proxies.txt to use proxy rotation`);
   }
 
   totalAccounts = parseInt(readline.question("\nBerapa akun yang mau dibuat? ")) || 1;
+  
+  if (freshProxies.length > 0 && totalAccounts > freshProxies.length) {
+    console.log(`\n⚠️  WARNING: You have ${freshProxies.length} fresh proxies but want ${totalAccounts} accounts`);
+    console.log(`   Some proxies will be reused (and might fail)`);
+  }
+  
   console.log(`✅ Target set: ${totalAccounts} accounts\n`);
 }
 
