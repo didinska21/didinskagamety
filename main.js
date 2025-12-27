@@ -3,7 +3,7 @@ import Tesseract from "tesseract.js";
 import fs from "fs";
 import readline from "readline-sync";
 
-// ================= MENU =================
+/* ================= MENU ================= */
 console.log(`
 ==============================
  AUTO REGISTER BOT
@@ -15,7 +15,6 @@ console.log(`
 `);
 
 const choice = readline.question("Pilih mode (1/2/3): ");
-
 let proxy = null;
 
 if (choice === "2") {
@@ -25,10 +24,10 @@ if (choice === "2") {
 if (choice === "3") {
   const list = fs.readFileSync("proxies.txt", "utf8")
     .split("\n")
-    .map(p => p.trim())
+    .map(x => x.trim())
     .filter(Boolean);
 
-  if (list.length === 0) {
+  if (!list.length) {
     console.log("❌ proxies.txt kosong");
     process.exit(1);
   }
@@ -37,9 +36,9 @@ if (choice === "3") {
   console.log("🔁 Proxy dipilih:", proxy);
 }
 
-// ================= LAUNCH OPTIONS =================
+/* ================= BROWSER ================= */
 const launchOptions = {
-  headless: true, // WAJIB di VPS
+  headless: true,
   defaultViewport: { width: 1366, height: 768 },
   args: [
     "--no-sandbox",
@@ -49,20 +48,18 @@ const launchOptions = {
   ]
 };
 
-if (proxy) {
-  launchOptions.args.push(`--proxy-server=${proxy}`);
-}
+if (proxy) launchOptions.args.push(`--proxy-server=${proxy}`);
 
-// ================= MAIN =================
+/* ================= MAIN ================= */
 (async () => {
   console.log("🚀 Launching browser...");
   const browser = await puppeteer.launch(launchOptions);
   const page = await browser.newPage();
 
-  // ===== PROXY AUTH =====
+  // proxy auth
   if (proxy && proxy.includes("@")) {
-    const authPart = proxy.split("@")[0].replace(/^https?:\/\//, "");
-    const [username, password] = authPart.split(":");
+    const auth = proxy.split("@")[0].replace(/^https?:\/\//, "");
+    const [username, password] = auth.split(":");
     await page.authenticate({ username, password });
   }
 
@@ -71,39 +68,39 @@ if (proxy) {
     timeout: 60000
   });
 
-  console.log("🌐 Halaman dibuka");
-  console.log("🔗 URL aktif:", page.url());
+  console.log("🌐 Page opened:", page.url());
 
-  // ================= WAIT FORM =================
-  console.log("⏳ Menunggu form register...");
-  try {
-    await page.waitForSelector('input[name="login"]', {
-      visible: true,
-      timeout: 60000
-    });
-  } catch {
-    console.log("❌ Form tidak ditemukan, simpan debug.html");
-    const html = await page.content();
-    fs.writeFileSync("debug.html", html);
-    await browser.close();
-    return;
-  }
+  /* ================= WAIT FORM (ANTI ROCKET LOADER) ================= */
+  console.log("⏳ Menunggu container #form...");
+  await page.waitForSelector("#form", { visible: true, timeout: 60000 });
 
-  console.log("✅ Form register ditemukan");
+  console.log("⏳ Menunggu input di-inject JS...");
+  await page.waitForFunction(() => {
+    const f = document.querySelector("#form");
+    return (
+      f &&
+      f.querySelector('input[name="login"]') &&
+      f.querySelector('input[name="email"]') &&
+      f.querySelector('input[name="pass"]') &&
+      f.querySelector('input[name="cap"]')
+    );
+  }, { timeout: 60000 });
 
-  // ================= FORM FILL =================
+  console.log("✅ Form siap sepenuhnya");
+
+  /* ================= FILL FORM ================= */
   const uid = Date.now();
 
-  await page.type('input[name="login"]', `user${uid}`, { delay: 80 });
-  await page.type('input[name="email"]', `user${uid}@gmail.com`, { delay: 80 });
-  await page.type('input[name="pass"]', "Password123!", { delay: 80 });
+  await page.type('#form input[name="login"]', `user${uid}`, { delay: 80 });
+  await page.type('#form input[name="email"]', `user${uid}@gmail.com`, { delay: 80 });
+  await page.type('#form input[name="pass"]', "Password123!", { delay: 80 });
 
-  console.log("✍️ Form utama diisi");
+  console.log("✍️ Data user diisi");
 
-  // ================= CAPTCHA =================
+  /* ================= CAPTCHA ================= */
   const capImg = await page.$("#cap_img");
   if (!capImg) {
-    console.log("❌ Captcha image tidak ditemukan");
+    console.log("❌ CAPTCHA image tidak ditemukan");
     await browser.close();
     return;
   }
@@ -121,24 +118,24 @@ if (proxy) {
   console.log("🔍 OCR Result:", captcha);
 
   if (captcha.length !== 4) {
-    console.log("❌ OCR captcha tidak valid, stop");
+    console.log("❌ OCR captcha invalid → STOP");
     await browser.close();
     return;
   }
 
-  await page.type('input[name="cap"]', captcha, { delay: 80 });
+  await page.type('#form input[name="cap"]', captcha, { delay: 80 });
 
-  // ================= SUBMIT =================
+  /* ================= SUBMIT ================= */
   console.log("📨 Submit form...");
   await Promise.all([
-    page.click('button[name="sub_reg"]'),
+    page.click('#form button[name="sub_reg"]'),
     page.waitForNavigation({
       waitUntil: "networkidle2",
       timeout: 60000
     })
   ]);
 
-  // ================= RESULT =================
+  /* ================= RESULT ================= */
   const bodyText = await page.evaluate(() => document.body.innerText);
 
   if (/success|successful/i.test(bodyText)) {
