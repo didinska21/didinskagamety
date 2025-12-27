@@ -1,56 +1,42 @@
 import puppeteer from "puppeteer";
-import fs from "fs";
 import readline from "readline-sync";
+import axios from "axios";
+import fs from "fs";
 
 /* ================= CONFIG ================= */
-const TOTAL_ACCOUNT = 1; // jumlah akun
+const TOTAL_ACCOUNT = 10;
 const TARGET_URL = "https://gamety.org/?pages=reg";
 
-/* ================= MENU ================= */
-console.log(`
-==============================
- AUTO REGISTER BOT (MANUAL CAPTCHA)
-==============================
-1. Tanpa Proxy
-2. Proxy Statis (HTTP only)
-==============================
-`);
+// === PROXY (HTTP ROTATING – WAJIB FORMAT INI) ===
+const PROXY_HOST = "na.proxys5.net:6200";
+const PROXY_USER = "81634571-zone-custom";
+const PROXY_PASS = "g93c7o0n";
 
-const choice = readline.question("Pilih mode (1/2): ");
-let proxy = null;
-
-if (choice === "2") {
-  proxy = readline.question("Masukkan proxy HTTP (http://user:pass@ip:port): ");
-}
-
-/* ================= BROWSER ================= */
-const launchOptions = {
-  headless: true,
-  defaultViewport: { width: 1366, height: 768 },
-  args: [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu"
-  ]
-};
-
-if (proxy) {
-  launchOptions.args.push(`--proxy-server=${proxy}`);
+/* ================= UTILS ================= */
+async function checkIP(proxy) {
+  try {
+    const res = await axios.get("https://api.ipify.org", {
+      proxy: {
+        host: proxy.host,
+        port: proxy.port,
+        auth: {
+          username: proxy.username,
+          password: proxy.password
+        }
+      },
+      timeout: 10000
+    });
+    return res.data;
+  } catch {
+    return null;
+  }
 }
 
 /* ================= MAIN ================= */
 (async () => {
-  console.log("🚀 Launching browser...");
-  const browser = await puppeteer.launch(launchOptions);
-  const page = await browser.newPage();
+  console.log("🚀 START AUTO REGISTER (ROTATING IP)");
 
-  // HTTP proxy auth (jika ada)
-  if (proxy && proxy.includes("@")) {
-    const authPart = proxy.split("@")[0].replace(/^http:\/\//, "");
-    const [username, password] = authPart.split(":");
-    await page.authenticate({ username, password });
-  }
+  let lastIP = null;
 
   for (let i = 1; i <= TOTAL_ACCOUNT; i++) {
     console.log(`
@@ -58,12 +44,50 @@ if (proxy) {
 👤 MEMBUAT AKUN KE-${i}
 ==============================`);
 
+    /* ===== CHECK IP (ROTATING CONFIRM) ===== */
+    const currentIP = await checkIP({
+      host: "na.proxys5.net",
+      port: 6200,
+      username: PROXY_USER,
+      password: PROXY_PASS
+    });
+
+    console.log("🌐 IP SAAT INI:", currentIP || "UNKNOWN");
+
+    if (currentIP && currentIP === lastIP) {
+      console.log("⚠️ IP BELUM BERUBAH → STOP (proxy belum rotate)");
+      break;
+    }
+
+    lastIP = currentIP;
+
+    /* ===== LAUNCH BROWSER (NEW SESSION) ===== */
+    const browser = await puppeteer.launch({
+      headless: true,
+      defaultViewport: { width: 1366, height: 768 },
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        `--proxy-server=http://${PROXY_HOST}`
+      ]
+    });
+
+    const page = await browser.newPage();
+
+    await page.authenticate({
+      username: PROXY_USER,
+      password: PROXY_PASS
+    });
+
+    /* ===== OPEN REGISTER PAGE ===== */
     await page.goto(TARGET_URL, {
       waitUntil: "domcontentloaded",
       timeout: 60000
     });
 
-    /* ===== WAIT FORM (ANTI ROCKET LOADER) ===== */
+    /* ===== WAIT FORM (ANTI CLOUDFLARE DELAY) ===== */
     await page.waitForSelector("#form", { visible: true, timeout: 60000 });
     await page.waitForFunction(() => {
       const f = document.querySelector("#form");
@@ -78,15 +102,7 @@ if (proxy) {
 
     console.log("✅ Form siap");
 
-    /* ===== CLEAR FORM ===== */
-    await page.evaluate(() => {
-      document.querySelector('#form input[name="login"]').value = "";
-      document.querySelector('#form input[name="email"]').value = "";
-      document.querySelector('#form input[name="pass"]').value = "";
-      document.querySelector('#form input[name="cap"]').value = "";
-    });
-
-    /* ===== FILL USER DATA ===== */
+    /* ===== FILL USER ===== */
     const uid = Date.now() + i;
     const username = `user${uid}`;
     const email = `user${uid}@gmail.com`;
@@ -96,28 +112,20 @@ if (proxy) {
     await page.type('#form input[name="email"]', email, { delay: 60 });
     await page.type('#form input[name="pass"]', password, { delay: 60 });
 
-    /* ===== CAPTCHA SAVE ===== */
-    const capImg = await page.$("#cap_img");
-    if (!capImg) {
-      console.log("❌ CAPTCHA tidak ditemukan");
-      continue;
-    }
-
+    /* ===== CAPTCHA ===== */
     const captchaPath = `captcha/captcha${i}.png`;
+    const capImg = await page.$("#cap_img");
     await capImg.screenshot({ path: captchaPath });
-    console.log(`🧩 CAPTCHA disimpan: ${captchaPath}`);
-    console.log(`👉 Buka file ${captchaPath}`);
 
-    /* ===== MANUAL CAPTCHA INPUT ===== */
-    const captchaValue = readline.question("✍️ Masukkan captcha: ");
-    await page.type('#form input[name="cap"]', captchaValue, { delay: 60 });
+    console.log(`🧩 CAPTCHA disimpan: ${captchaPath}`);
+    const captcha = readline.question("✍️ Masukkan captcha: ");
+
+    await page.type('#form input[name="cap"]', captcha, { delay: 60 });
 
     /* ===== SUBMIT ===== */
     console.log("📨 Submit form...");
-    await Promise.all([
-      page.click('#form button[name="sub_reg"]'),
-      page.waitForTimeout(2000) // tunggu swal muncul
-    ]);
+    await page.click('#form button[name="sub_reg"]');
+    await new Promise(r => setTimeout(r, 2500));
 
     /* ===== SWEETALERT RESULT ===== */
     const swalText = await page.evaluate(() => {
@@ -126,27 +134,28 @@ if (proxy) {
     });
 
     if (swalText) {
-      console.log(`📣 SWEETALERT: ${swalText}`);
+      console.log("📣 SWEETALERT:", swalText);
 
       if (/success/i.test(swalText)) {
-        console.log(`✅ AKUN KE-${i} BERHASIL`);
+        console.log("✅ REGISTER SUCCESS");
         fs.appendFileSync(
           "akun_sukses.txt",
-          `${username}|${email}|${password}\n`
+          `${username}|${email}|${password}|${currentIP}\n`
         );
-      } else if (/captcha/i.test(swalText)) {
-        console.log(`❌ CAPTCHA SALAH`);
-      } else if (/disabled|duplicate|country/i.test(swalText)) {
-        console.log(`🚫 REGISTRATION DITOLAK`);
+      } else if (/IP address/i.test(swalText)) {
+        console.log("🚫 IP LIMIT → STOP LOOP");
+        await browser.close();
         break;
       } else {
-        console.log(`⚠️ PESAN TIDAK DIKENAL`);
+        console.log("⚠️ REGISTER DITOLAK");
       }
     } else {
-      console.log("⚠️ Tidak ada SweetAlert terdeteksi");
+      console.log("⚠️ Tidak ada SweetAlert");
     }
+
+    await browser.close();
+    console.log("🧹 Browser ditutup (rotate IP next)");
   }
 
-  await browser.close();
-  console.log("\n🎉 SEMUA PROSES SELESAI");
+  console.log("\n🎉 SELESAI SEMUA PROSES");
 })();
